@@ -1,0 +1,29 @@
+# Pinned to the versions this server was verified against on 2026-08-24
+# (Mac mini M2 Pro, 32 GB, macOS 15, Python 3.14). Higgs + mlx-audio is a
+# fast-moving stack and unpinned installs have broken before, so the pins are
+# deliberate. Loosen them only if you are prepared to re-verify Czech output.
+
+mlx-audio==0.4.7          # serves Higgs Audio v3 natively; no port needed
+mlx==0.32.0
+transformers==5.14.1
+huggingface_hub==1.27.0
+
+# torch is NOT used for inference — mlx does that. It is needed only to load
+# the audio codec weights, which ship as PyTorch tensors. It is the single
+# largest dependency; there is currently no way to avoid it.
+torch==2.13.0
+
+fastapi==0.141.1
+uvicorn==0.52.1
+
+# FastAPI needs this to accept multipart form uploads, and mlx_audio's server
+# declares such an endpoint. Without it the server imports fine and then dies
+# on startup with "Form data requires python-multipart" — so it is a real
+# dependency even though nothing imports it by name.
+python-multipart==0.0.20
+
+# webrtcvad still imports pkg_resources, which Python 3.12+ removed from the
+# standard library. setuptools puts it back — but setuptools 81 deprecates
+# pkg_resources with a hard error, so it has to stay below that.
+webrtcvad==2.0.10
+setuptools<81
