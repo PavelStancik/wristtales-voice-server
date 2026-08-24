@@ -1,11 +1,19 @@
 # WristTales Voice Server
 
+**🇨🇿 Čeština** · [**🇬🇧 English**](#english) — *full English documentation below*
+
 Lokální hlasový server pro **[Binder](https://apps.apple.com/app/wristtales-binder)** —
 namlouvá knihy českým hlasem přímo na tvém Macu.
 
 Nic se nikam neposílá. Text ani hotový zvuk neopustí počítač, není potřeba
 žádný účet ani API klíč, a nic se neplatí za minutu. Server je zdarma a jeho
 zdrojový kód je celý tady.
+
+**Obsah:** [Proč zvlášť](#proč-se-to-instaluje-zvlášť) ·
+[Co je potřeba](#co-je-potřeba) · [Instalace](#instalace) ·
+[Spuštění](#spuštění) · [Jak dlouho to trvá](#jak-dlouho-namlouvání-trvá) ·
+[Hlasy](#hlasy) · [Aktualizace](#aktualizace) ·
+[Když něco nefunguje](#když-něco-nefunguje) · [English](#english)
 
 ---
 
@@ -136,6 +144,8 @@ občas netrefí jazyk. Delší odstavce vycházejí spolehlivěji.
 ---
 
 ## English
+
+[⬆ Čeština](#wristtales-voice-server) · **English**
 
 A local text-to-speech server for **Binder**, the macOS audiobook binder.
 It narrates books on your own Mac — nothing is uploaded, no account, no API
