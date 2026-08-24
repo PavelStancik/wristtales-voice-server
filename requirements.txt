@@ -20,7 +20,7 @@ uvicorn==0.52.1
 # declares such an endpoint. Without it the server imports fine and then dies
 # on startup with "Form data requires python-multipart" — so it is a real
 # dependency even though nothing imports it by name.
-python-multipart==0.0.20
+python-multipart==0.0.31
 
 # webrtcvad still imports pkg_resources, which Python 3.12+ removed from the
 # standard library. setuptools puts it back — but setuptools 81 deprecates
