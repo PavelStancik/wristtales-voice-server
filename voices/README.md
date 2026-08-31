@@ -23,6 +23,19 @@ Všechny jsou **syntetické** — vygeneroval je tenhle model. Nejsou to nahráv
 | `vypravecka-1-expresivni.wav` | ženský |
 | `vypravecka-2-expresivni.wav` | ženský |
 
+### Anglicky a německy
+
+| soubor | popis |
+|---|---|
+| `woman-en.wav` | anglicky, ženský |
+| `man-en.wav` | anglicky, mužský |
+| `woman-de.wav` | německy, ženský |
+| `man-de.wav` | německy, mužský, středně starý |
+
+Jazyk reference řídí přízvuk, ne obsah — anglická reference přečte i český
+text, jen s anglickým přízvukem. Ke každé knize proto vybírej referenci v
+jazyce té knihy.
+
 Soubory `.mp3` vedle nich jsou jen na poslech — jako reference se posílá `.wav`.
 
 ### Přepis, který k nim patří
@@ -31,6 +44,16 @@ Ke všem `*-expresivni` variantám se posílá tenhle `ref_text`:
 
 > To je ale nesmysl! Haha, tomu přece nemůžeš věřit. Ale dobře, poslouchám dál,
 > protože mě to upřímně baví.
+
+K `woman-en.wav` a `man-en.wav`:
+
+> Oh, come on — that cannot possibly be true! Ha! No, no, keep going, I am
+> listening. Honestly, I have not enjoyed anything this much in weeks.
+
+K `woman-de.wav` a `man-de.wav`:
+
+> Also das ist doch Unsinn! Haha, das kannst du unmöglich glauben. Aber gut,
+> ich höre weiter zu, denn ehrlich gesagt macht mir das Spaß.
 
 Přepis musí odpovídat nahrávce. Když nesedí, kvalita znatelně spadne.
 
@@ -76,3 +99,20 @@ Má to ale háček: při stejném nastavení vyšel jeden render „velmi dobře
 špatně. Expresivita a rozptyl jsou nejspíš tentýž knoflík. Kdyby kapitola
 obsahovala moc špatných bloků, první věc ke zkoušení je `0.7` — je klidnější
 a předvídatelnější.
+
+## Jak se vybíraly anglické a německé hlasy
+
+Higgs bez reference losuje mluvčího při každém požadavku, takže dávka nahrávek
+je vlastně konkurz. Vygenerovalo se jich 33 anglických a 18 německých a čtyři
+se vybraly **poslechem**.
+
+Stojí za zaznamenání, proč ne měřením. Zkusily se tři osy a všechny selhaly:
+
+- **základní frekvence** označila za ženský hlas mužský falzet — vysoká výška,
+  mužský hlasový trakt,
+- **spektrální centroid** chytil první takový případ, druhý ne,
+- **formanty přes LPC** označily za ženský i hlas s 80 Hz, což je nesmysl.
+
+U českých hlasů základní frekvence stačila, protože ta sada je jednoznačná
+(muži 80–152 Hz, ženy 171–174 Hz). Jakmile se ale v zásobě objeví vysoko
+posazený mužský hlas, měření ho zařadí špatně a pozná to jedině ucho.
