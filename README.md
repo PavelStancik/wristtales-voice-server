@@ -88,6 +88,21 @@ Není to chyba, je to daň za to, že běží u tebe a ne na cizím serveru. Po�
 s tím jako s prací na noc: pusť to večer s `--keep-awake` a ráno máš hotovo.
 Namlouvání se dá kdykoli přerušit a pokračovat později.
 
+## Dávkové namlouvání
+
+Vedle `POST /v1/audio/speech` (jeden blok na požadavek — **beze změny**, starší
+Binder proti němu funguje úplně stejně jako dřív) server nabízí i
+`POST /v1/audio/speech/batch`, který namluví víc bloků najednou jedním
+požadavkem. Na tomhle Macu (M2 Pro, 32 GB) to změřeně zrychlilo namlouvání
+**2,17×** (dávka po osmi, RTF 0,85 místo 1,85) při shodné kvalitě.
+
+Velikost dávky nastavuje proměnná `VOICE_SERVER_MAX_BATCH` (výchozí `8`).
+**Nezvyšuj ji bez měření** — paměťový strop nad dávkou 8 je neznámý, `ru_maxrss`
+u MLX (unified memory) nic neříká, a příliš velká dávka jiného modelu na tomhle
+Macu jednou skončila v thrashingu (44 GB pageoutů, 1 h 44 min na 7,4 s zvuku).
+Selhání jednotlivého bloku v dávce (např. prázdný text) nezhroutí celý
+požadavek — vrátí se chyba jen u něj, ostatní bloky dorazí normálně.
+
 ## Hlasy
 
 Higgs je **klonovací** model. Nevybíráš z hotové sady hlasů — dáváš mu
@@ -171,11 +186,23 @@ git clone https://github.com/PavelStancik/wristtales-voice-server.git ~/wristtal
 
 It listens on `http://127.0.0.1:8000` and speaks the OpenAI-compatible
 `POST /v1/audio/speech` API, so it also works with anything else that targets
-that endpoint.
+that endpoint. **That endpoint's behaviour is unchanged** — an existing
+Binder install keeps working exactly as before.
 
 **Expect it to be slower than real time** — roughly 1.3× on an M2 Pro, so a
 10-hour book takes about 15 hours to narrate. Run it overnight with
 `--keep-awake`.
+
+**Batch synthesis:** `POST /v1/audio/speech/batch` narrates several blocks
+in one request, sharing one narrator reference across the batch. Measured on
+this Mac (M2 Pro, 32 GB): batch of 8 gave RTF 0.85 vs. 1.85 serial — a 2.17×
+speedup at identical quality. Batch size defaults to 8 and is configurable via
+`VOICE_SERVER_MAX_BATCH` — **do not raise it without re-measuring**: the
+memory ceiling above 8 is unknown (`ru_maxrss` doesn't reflect MLX's unified
+memory, and an oversized batch on this same Mac once thrashed into 44 GB of
+pageouts for 7.4s of audio). A single failed item (e.g. empty text) in a
+batch returns an error for that item only — the rest of the batch still
+comes back.
 
 **Voices:** Higgs is a *cloning* model. Without a reference recording it picks
 a random speaker on every single request. Ready-made synthetic references are

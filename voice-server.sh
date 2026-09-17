@@ -96,14 +96,14 @@ if [[ ! -x $PY ]]; then
      Spusť nejdřív:  $ROOT/install.sh"
 fi
 
-print -- "spouštím mlx_audio.server …"
+print -- "spouštím wristtales_voice_server (mlx_audio.server + dávkový endpoint) …"
 {
   print -- ""
   print -- "=== start $(date '+%Y-%m-%d %H:%M:%S') ==="
 } >> "$LOG"
 
 cd "$ROOT" || die "nelze vstoupit do $ROOT"
-nohup "$PY" -m mlx_audio.server --host "$HOST" --port "$PORT" >> "$LOG" 2>&1 &
+nohup "$PY" -m wristtales_voice_server --host "$HOST" --port "$PORT" >> "$LOG" 2>&1 &
 SERVER_PID=$!
 print -- "$SERVER_PID" > "$PIDFILE"
 disown 2>/dev/null
