@@ -23,6 +23,7 @@ import io
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -210,6 +211,77 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
         request.emit_done()
 
 
+# --------------------------------------------------------------------------
+# Stabilní jména modelů
+#
+# Binder nabízí tři volby: bf16, 8bit a Vlastní… Jen ta třetí je textové
+# pole; první dvě musí být pevné, jinak si uživatel nastavením rozbije to,
+# co mu nainstaloval installer. Aby mohly být pevné, nesmí to být CESTY —
+# absolutní cesta platí jen na stroji, kde vznikla, a Binder o disku serveru
+# nic neví (ani vědět nemá: je v sandboxu a mluví jen přes localhost).
+#
+# mlx_audio žádné aliasy nemá — ``load_model()`` bere buď HF identifikátor,
+# nebo cestu. Tuhle jednu vrstvu tedy přidáváme my, a to obalením
+# ``model_provider``, ne úpravou jejich kódu: všechny endpointy včetně
+# ``/v1/audio/speech`` chodí přes ``model_provider.load_model`` (server.py
+# ``_load_model_for_inference``), takže stačí obalit tu jedinou metodu.
+#
+# 8bit se nabízí, jen když konvert na disku SKUTEČNĚ je. Nabízet jméno,
+# které při syntéze spadne, je horší než ho nenabízet vůbec — Binder na
+# prázdnou odpověď umí zareagovat ("Server nenabízí 8bit konvert"), na
+# selhání uprostřed dlouhé narace ne.
+
+MODEL_DIR = Path(
+    os.environ.get("WRISTTALES_MODEL_DIR", Path(__file__).resolve().parent / "models")
+)
+
+BF16_MODEL_ID = "bosonai/higgs-audio-v3-tts-4b"
+EIGHT_BIT_ALIAS = "higgs-v3-8bit"
+BF16_ALIAS = "higgs-v3-bf16"
+
+
+def model_aliases() -> dict[str, str]:
+    """Alias -> co se doopravdy načte. 8bit jen když existuje."""
+    aliases = {BF16_ALIAS: BF16_MODEL_ID}
+    convert = MODEL_DIR / EIGHT_BIT_ALIAS
+    if (convert / "model.safetensors").is_file():
+        aliases[EIGHT_BIT_ALIAS] = str(convert)
+    return aliases
+
+
+def resolve_model(name: str) -> str:
+    return model_aliases().get(name, name)
+
+
+_ALIASES_INSTALLED = False
+
+
+def _install_model_aliases() -> None:
+    """Obalí model_provider tak, aby aliasy platily pro všechny endpointy."""
+    global _ALIASES_INSTALLED
+    if _ALIASES_INSTALLED:
+        return
+
+    original_load = model_provider.load_model
+    original_available = model_provider.get_available_models
+
+    def load_with_alias(model_name: str):
+        resolved = resolve_model(model_name)
+        if resolved != model_name:
+            logger.info("model alias %r -> %r", model_name, resolved)
+        return original_load(resolved)
+
+    async def available_with_aliases():
+        listed = list(await original_available())
+        # Aliasy patří na začátek: Binder bere první shodu a chceme, aby
+        # viděl stabilní jméno, ne cestu, pod kterou je model rezidentní.
+        return list(model_aliases()) + [m for m in listed if m not in model_aliases()]
+
+    model_provider.load_model = load_with_alias
+    model_provider.get_available_models = available_with_aliases
+    _ALIASES_INSTALLED = True
+
+
 _BATCH_ADAPTER_REGISTERED = False
 
 
@@ -264,6 +336,7 @@ async def tts_speech_batch(payload: BatchSpeechRequest) -> dict[str, Any]:
         )
 
     _ensure_batch_adapter_registered()
+    _install_model_aliases()
     handle = get_inference_broker().submit(
         endpoint_kind="tts_batch",
         model_name=payload.model,
@@ -291,6 +364,7 @@ def main() -> None:
     import mlx_audio.server as mlx_server
 
     _ensure_batch_adapter_registered()
+    _install_model_aliases()
     mlx_server.main()
 
 

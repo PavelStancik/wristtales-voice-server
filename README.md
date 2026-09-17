@@ -81,8 +81,12 @@ a hlavně ho neshodí. Rozdělaná kapitola tak nepřijde vniveč.
 
 Tohle si přečti dřív, než pustíš první knihu, ať tě to nepřekvapí.
 
-Model je **pomalejší než skutečný čas** — na M2 Pro zhruba 1,3násobek. Deset
-hodin poslechu tedy znamená **kolem patnácti hodin počítání**.
+Model je **pomalejší než skutečný čas** — na M2 Pro zhruba 1,3násobek při
+namlouvání po jednom bloku. Deset hodin poslechu tedy znamená **kolem
+patnácti hodin počítání**.
+
+S dávkovým namlouváním a 8bit modelem (obojí níže) jde stejná kniha za
+**zhruba sedm hodin**. Pořád je to práce na noc, jen kratší.
 
 Není to chyba, je to daň za to, že běží u tebe a ne na cizím serveru. Počítej
 s tím jako s prací na noc: pusť to večer s `--keep-awake` a ráno máš hotovo.
@@ -96,12 +100,46 @@ Binder proti němu funguje úplně stejně jako dřív) server nabízí i
 požadavkem. Na tomhle Macu (M2 Pro, 32 GB) to změřeně zrychlilo namlouvání
 **2,17×** (dávka po osmi, RTF 0,85 místo 1,85) při shodné kvalitě.
 
+Na 8bit modelu je zrychlení menší — **1,67×** (RTF 0,66 místo 1,10). Obě páky
+totiž útočí na totéž úzké hrdlo, propustnost paměti, takže se nenásobí.
+Nejrychlejší kombinace je přesto 8bit v dávce: **2,8× proti bf16 po jednom.**
+
 Velikost dávky nastavuje proměnná `VOICE_SERVER_MAX_BATCH` (výchozí `8`).
 **Nezvyšuj ji bez měření** — paměťový strop nad dávkou 8 je neznámý, `ru_maxrss`
 u MLX (unified memory) nic neříká, a příliš velká dávka jiného modelu na tomhle
 Macu jednou skončila v thrashingu (44 GB pageoutů, 1 h 44 min na 7,4 s zvuku).
 Selhání jednotlivého bloku v dávce (např. prázdný text) nezhroutí celý
 požadavek — vrátí se chyba jen u něj, ostatní bloky dorazí normálně.
+
+## Dva modely, jedna volba
+
+Server umí dvě varianty téhož Higgse a nabízí je pod **stabilními jmény**,
+takže v Binderu nikdy nepíšeš cestu k souboru:
+
+| jméno v `/v1/models` | co to je | velikost | rychlost |
+|---|---|---|---|
+| `higgs-v3-bf16` | původní váhy od Bosonu | 8,7 GB | RTF 1,85 / **0,85** v dávce |
+| `higgs-v3-8bit` | poloviční konvert | 4,4 GB | RTF 1,10 / **0,66** v dávce |
+
+**Kvalita je neodlišitelná.** Naměřeno na dvanácti blocích české prózy: WER
+0,023 u obou, žádný zmetek. Ani poslechem rozdíl nenajdeš. 8bit je tedy
+prostě rychlejší, ne "horší" — proto se vyplatí ho mít.
+
+8bit konvert vyrábí `install.sh` (krok 6) u tebe na Macu. Hotový se nestahuje
+kvůli licenci Higgse (Research/Non-Commercial): odvozené váhy nikam
+nepřerozdělujeme. Ručně:
+
+```sh
+./venv/bin/python quantize-8bit.py \
+    --source bosonai/higgs-audio-v3-tts-4b --dest ./models/higgs-v3-8bit
+```
+
+Když konvert neexistuje, server jméno `higgs-v3-8bit` **vůbec nenabídne** a
+Binder to pozná — místo selhání uprostřed dlouhé narace řekne rovnou, že ho
+server nemá.
+
+> **4bit nezkoušej.** Ověřeno: ztrácí značku konce a generuje až do stropu
+> tokenů — konstantních 47,8 s zvuku bez ohledu na vstup.
 
 ## Hlasy
 

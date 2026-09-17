@@ -136,7 +136,7 @@ ok "import prošel"
 
 # --- 5. model --------------------------------------------------------------
 
-bold "5/5  Stažení modelu ($MODEL, 8,7 GB)"
+bold "5/6  Stažení modelu ($MODEL, 8,7 GB)"
 print -- "     Stahuje se jen jednou. Podruhé se vezme z ~/.cache/huggingface."
 
 "$PY" - "$MODEL" <<'PYDL' || die "stažení modelu selhalo"
@@ -145,6 +145,34 @@ from huggingface_hub import snapshot_download
 path = snapshot_download(sys.argv[1])
 print(f"  ✓ model připraven: {path}")
 PYDL
+
+# --- 6. 8bit konvert -------------------------------------------------------
+
+# Proč se kvantizuje lokálně a nestahuje hotové: licence Higgse je
+# Research/Non-Commercial, takže odvozené váhy nikam nepřerozdělujeme.
+# Konvert je navíc levný — pár minut proti 8,7 GB stahování.
+#
+# Je to VOLITELNÉ. Když krok selže nebo ho přeskočíš, server běží dál, jen
+# v /v1/models nenabídne "higgs-v3-8bit" a Binder u volby Rychlejší (8bit)
+# poctivě řekne, že ho server nemá. Nikdy nenabízíme jméno, které by při
+# syntéze spadlo.
+
+CONVERT="$ROOT/models/higgs-v3-8bit"
+
+bold "\n6/6  8bit konvert (volitelný, ~4,4 GB)"
+if [[ -f "$CONVERT/model.safetensors" ]]; then
+  ok "konvert už existuje — přeskakuji"
+elif [[ "${SKIP_8BIT:-}" == "1" ]]; then
+  print -- "     SKIP_8BIT=1 — přeskakuji."
+else
+  print -- "     Poloviční velikost, ~1,5x rychlejší, kvalita neodlišitelná."
+  print -- "     Trvá to pár minut. Přeskočit: SKIP_8BIT=1 $0"
+  if "$PY" "$ROOT/quantize-8bit.py" --source "$MODEL" --dest "$CONVERT"; then
+    ok "8bit konvert připraven"
+  else
+    print -- "     ⚠ konverze selhala — nevadí, server pojede na bf16."
+  fi
+fi
 
 # --- hotovo ----------------------------------------------------------------
 
