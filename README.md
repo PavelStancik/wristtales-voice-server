@@ -111,6 +111,24 @@ Macu jednou skončila v thrashingu (44 GB pageoutů, 1 h 44 min na 7,4 s zvuku).
 Selhání jednotlivého bloku v dávce (např. prázdný text) nezhroutí celý
 požadavek — vrátí se chyba jen u něj, ostatní bloky dorazí normálně.
 
+## Kontrola namluveného textu
+
+Higgs občas přestane mluvit dřív, než dojde na konec bloku, a zbytek věty
+tiše chybí. Z délky zvuku se to spolehlivě poznat nedá: audit celé knihy
+(5 231 bloků) našel 74 uříznutých bloků a délková kontrola v Binderu
+propustila všechny.
+
+Binder proto každý namluvený blok nechá přepsat whisperem přes
+`POST /v1/audio/transcriptions` (endpoint, který `mlx_audio` nabízí sám,
+server se kvůli tomu nemění) a porovná konec přepisu s textem. Když konec
+chybí, blok namluví znovu. Přepis bloku trvá 1–2 s, u celé knihy to je
+zhruba 5–9 % času navíc.
+
+Model `mlx-community/whisper-large-v3-turbo-asr-fp16` (1,5 GB) stáhne
+`install.sh`. Pokud chybí, Binder kontroluje jen délku zvuku jako dřív.
+Při prvním použití se model načítá do paměti asi minutu; drží se pak vedle
+Higgse, nic se nevyhazuje.
+
 ## Dva modely, jedna volba
 
 Server umí dvě varianty téhož Higgse a nabízí je pod **stabilními jmény**,
@@ -260,6 +278,16 @@ memory, and an oversized batch on this same Mac once thrashed into 44 GB of
 pageouts for 7.4s of audio). A single failed item (e.g. empty text) in a
 batch returns an error for that item only — the rest of the batch still
 comes back.
+
+**Narration check:** Higgs sometimes stops before the end of a block and the
+rest of the sentence is silently missing; audio length does not reveal it (a
+whole-book audit found 74 truncated blocks that a duration check passed).
+Binder therefore transcribes every narrated block through mlx_audio's own
+`POST /v1/audio/transcriptions` (no server change) and re-narrates blocks
+whose ending is missing. `install.sh` downloads
+`mlx-community/whisper-large-v3-turbo-asr-fp16` (1.5 GB); without it Binder
+falls back to the duration check. About 1–2 s per block, 5–9 % extra time
+per book.
 
 **Voices:** Higgs is a *cloning* model. Without a reference recording it picks
 a random speaker on every single request. Ready-made synthetic references are
