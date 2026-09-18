@@ -159,13 +159,32 @@ hlasy, které tímhle prošly:
 | `vypravec-3-rychly.wav` | mužský, svižnější tempo |
 | `vypravecka-1-expresivni.wav` | ženský |
 | `vypravecka-2-expresivni.wav` | ženský |
+| `woman-en.wav`, `man-en.wav` | anglicky |
+| `woman-de.wav`, `man-de.wav` | německy |
+
+Jazyk reference řídí **přízvuk, ne obsah** — anglická reference přečte i český
+text, jen s anglickým přízvukem. Vybírej podle jazyka knihy.
 
 Všechny jsou **syntetické** — vygeneroval je tenhle model, nejsou to nahrávky
 žádného skutečného člověka.
 
+**Ke každé nahrávce leží `.txt` téhož jména s jejím přepisem** — ten se posílá
+jako `ref_text` vedle zvuku a modelu říká, co v ukázce zaznívá:
+
+```
+voices/
+  vypravec-2-expresivni.wav     ← reference
+  vypravec-2-expresivni.txt     ← její přepis
+```
+
+Chybějící `.txt` není chyba, narace poběží i bez něj. **Nesedící přepis ale
+je horší než žádný**, protože klon aktivně mate — když vyměníš nahrávku,
+vyměň i přepis.
+
 Chceš vlastní hlas? Stačí nahrávka **20 až 30 vteřin** čistého klidného
-čtení, 24 kHz mono WAV, bez hudby a bez šumu. Ulož ji do `voices/` a v Binderu
-ji vyber. Podrobnosti jsou v [`voices/README.md`](voices/README.md).
+čtení, 24 kHz mono WAV, bez hudby a bez šumu. Ulož ji do `voices/`, přidej
+vedle ní `.txt` s přepisem a v Binderu ji vyber. Podrobnosti jsou
+v [`voices/README.md`](voices/README.md).
 
 ## Aktualizace
 
@@ -244,7 +263,24 @@ comes back.
 
 **Voices:** Higgs is a *cloning* model. Without a reference recording it picks
 a random speaker on every single request. Ready-made synthetic references are
-in `voices/`; add your own as a 20–30 second 24 kHz mono WAV.
+in `voices/` — Czech, English and German, male and female. The reference's
+language governs the **accent, not the content**, so pick one in the language
+of the book.
+
+Each recording has a `.txt` of the same name holding its transcript, sent as
+`ref_text` alongside the audio:
+
+```
+voices/
+  man-en.wav     ← the reference
+  man-en.txt     ← its transcript
+```
+
+A missing `.txt` is not an error — narration works without it. **A mismatched
+transcript is worse than none**, though, because it actively misleads the
+clone: replace the recording, replace the transcript. Add your own voice as a
+20–30 second 24 kHz mono WAV plus its `.txt`. See
+[`voices/README.md`](voices/README.md).
 
 Licence: MIT for the code and the bundled voices. The model weights
 (`bosonai/higgs-audio-v3-tts-4b`) carry Boson AI's own terms.
