@@ -148,7 +148,7 @@ PYDL
 
 # Druhý, menší model: whisper pro kontrolu namluveného textu. Higgs občas
 # přestane mluvit dřív, než dojde na konec bloku, a z délky zvuku se to
-# poznat nedá (audit knihy Turnus: 74 uříznutých bloků, délková kontrola
+# poznat nedá (audit knihy ABCDE: 74 uříznutých bloků, délková kontrola
 # pustila všechny). Binder proto každý blok přepíše přes
 # /v1/audio/transcriptions a porovná s textem. mlx_audio potřebuje whisper
 # ve formátu s HF tokenizerem, proto -asr-fp16 a ne model balíčku mlx_whisper.
