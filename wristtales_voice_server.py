@@ -70,8 +70,16 @@ class BatchSpeechRequest(BaseModel):
 
     model: str
     inputs: list[str]
-    ref_audio: str
-    ref_text: str
+    # OBĚ jsou volitelná, protože klient je posílá podmíněně:
+    # OpenAICompatibleSynthesizer píše `ref_audio` jen `if let
+    # referenceAudioURL` a `ref_text` jen `if let referenceText`. Uživatel,
+    # který si vybral vlastní nahrávku bez přepisu, tedy `ref_text` neposílá
+    # vůbec — a dokud tu byla povinná, KAŽDÝ jeho dávkový požadavek padal na
+    # 422 a narace se nerozjela. Jednoblokový /v1/audio/speech od mlx_audio
+    # je snáší, takže se to projevilo jen na dávce a vypadalo to na problém
+    # s modelem, ne se schématem.
+    ref_audio: Optional[str] = None
+    ref_text: Optional[str] = None
     temperature: float = 0.9
     top_k: int = 50
     max_new_tokens: int = 2048
@@ -146,14 +154,18 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
             try:
                 # Encode the reference once per request (~0.3s) and reuse it
                 # for every item in the batch — do not re-encode per item.
-                ref_audio_codes = model.encode_reference_audio(req.ref_audio)
+                ref_audio_codes = (
+                    model.encode_reference_audio(req.ref_audio)
+                    if req.ref_audio is not None
+                    else None
+                )
                 # Higgs v3's batch_generate raises on voices/instructs/speeds/
                 # pitches/gender — narrator identity comes only from
                 # ref_audio_codes, so none of those are passed here.
                 for item in model.batch_generate(
                     texts=valid_texts,
                     ref_audio_codes=ref_audio_codes,
-                    ref_text=req.ref_text,
+                    ref_text=req.ref_text,  # None projde beze změny
                     temperature=req.temperature,
                     top_k=req.top_k,
                     max_new_tokens=req.max_new_tokens,
@@ -181,7 +193,11 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
                     if original_index in results:
                         continue
                     try:
-                        ref_audio_codes = model.encode_reference_audio(req.ref_audio)
+                        ref_audio_codes = (
+                            model.encode_reference_audio(req.ref_audio)
+                            if req.ref_audio is not None
+                            else None
+                        )
                         last = None
                         for last in model.generate(
                             text=text,
@@ -329,10 +345,20 @@ async def tts_speech_batch(payload: BatchSpeechRequest) -> dict[str, Any]:
                 f"{MAX_BATCH} (set VOICE_SERVER_MAX_BATCH to raise it)"
             ),
         )
-    if not os.path.exists(payload.ref_audio):
+    if payload.ref_audio is not None and not os.path.exists(payload.ref_audio):
         raise HTTPException(
             status_code=400,
             detail=f"Reference audio file not found: {payload.ref_audio}",
+        )
+    if payload.ref_audio is None:
+        # Higgs je klonovací model: BEZ reference si losuje mluvčího, a to
+        # u každého požadavku znovu — v dávce tedy může každý blok přečíst
+        # jiný hlas. Neodmítáme to (jednoblokový endpoint to taky dovolí a
+        # Binder má na to vlastní potvrzovací krok), ale ať je to v logu,
+        # až se někdo bude divit, proč kapitola střídá vypravěče.
+        logger.warning(
+            "batch synth without ref_audio: the speaker is sampled per "
+            "request, so blocks in this batch may not share a voice"
         )
 
     _ensure_batch_adapter_registered()
