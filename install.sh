@@ -146,6 +146,23 @@ path = snapshot_download(sys.argv[1])
 print(f"  ✓ model připraven: {path}")
 PYDL
 
+# Druhý, menší model: whisper pro kontrolu namluveného textu. Higgs občas
+# přestane mluvit dřív, než dojde na konec bloku, a z délky zvuku se to
+# poznat nedá (audit knihy ABCDE: 74 uříznutých bloků, délková kontrola
+# pustila všechny). Binder proto každý blok přepíše přes
+# /v1/audio/transcriptions a porovná s textem. mlx_audio potřebuje whisper
+# ve formátu s HF tokenizerem, proto -asr-fp16 a ne model balíčku mlx_whisper.
+# Selhání tady instalaci nezastaví: Binder bez tohoto modelu kontroluje
+# jen délku zvuku, jako dřív.
+WHISPER="mlx-community/whisper-large-v3-turbo-asr-fp16"
+print -- "     + $WHISPER (1,5 GB) pro kontrolu namluveného textu"
+"$PY" - "$WHISPER" <<'PYDL' || print -- "  ! whisper se nestáhl — Binder bude kontrolovat jen délku zvuku"
+import sys
+from huggingface_hub import snapshot_download
+path = snapshot_download(sys.argv[1])
+print(f"  ✓ whisper připraven: {path}")
+PYDL
+
 # --- 6. 8bit konvert -------------------------------------------------------
 
 # Proč se kvantizuje lokálně a nestahuje hotové: licence Higgse je
