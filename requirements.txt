@@ -27,3 +27,6 @@ python-multipart==0.0.31
 # pkg_resources with a hard error, so it has to stay below that.
 webrtcvad==2.0.10
 setuptools<81
+
+# Test-only; not used at runtime.
+pytest

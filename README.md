@@ -279,6 +279,14 @@ pageouts for 7.4s of audio). A single failed item (e.g. empty text) in a
 batch returns an error for that item only — the rest of the batch still
 comes back.
 
+**Reproducible batches (0.5.0+):** the request body accepts an optional
+`seed` (integer, `0`–`2147483647`). When set, it is forwarded once to
+`batch_generate()` for the whole batch and echoed back as `"seed"` on every
+successful `results[]` item. Items produced by the serial fallback after
+`batch_generate` raised are not seeded and echo `"seed": null`, as do error
+items and any response from a server older than 0.5.0. Omitting `seed`
+behaves exactly as before.
+
 **Narration check:** Higgs sometimes stops before the end of a block and the
 rest of the sentence is silently missing; audio length does not reveal it (a
 whole-book audit found 74 truncated blocks that a duration check passed).
