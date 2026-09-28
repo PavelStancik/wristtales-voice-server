@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mlx_audio.audio_io import write as audio_write
 
@@ -83,6 +83,11 @@ class BatchSpeechRequest(BaseModel):
     temperature: float = 0.9
     top_k: int = 50
     max_new_tokens: int = 2048
+    # Optional and additive (#436): when set, forwarded once to
+    # batch_generate() so the whole batch's random stream is deterministic.
+    # Serial-fallback items (see BatchTTSExecutionAdapter.run_serial) stay
+    # unseeded on purpose and echo `null` for this field.
+    seed: Optional[int] = Field(None, ge=0, le=2**31 - 1)
 
 
 @dataclass
@@ -96,6 +101,7 @@ class _ItemResult:
     format: Optional[str] = None
     audio_base64: Optional[str] = None
     error: Optional[str] = None
+    seed: Optional[int] = None
 
     def to_json(self) -> dict[str, Any]:
         if self.error is not None:
@@ -104,6 +110,7 @@ class _ItemResult:
             "index": self.index,
             "format": self.format,
             "audio_base64": self.audio_base64,
+            "seed": self.seed,
         }
 
 
@@ -169,6 +176,7 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
                     temperature=req.temperature,
                     top_k=req.top_k,
                     max_new_tokens=req.max_new_tokens,
+                    seed=req.seed,
                 ):
                     # batch_generate yields out of order — sequence_idx is
                     # the position WITHIN valid_texts, not the original
@@ -178,6 +186,7 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
                         index=original_index,
                         format="mp3",
                         audio_base64=_encode_mp3_base64(item.audio, item.sample_rate),
+                        seed=req.seed,
                     )
             except Exception as exc:  # noqa: BLE001 - isolate to per-item fallback
                 # We don't know which single item in the batched tensor op
