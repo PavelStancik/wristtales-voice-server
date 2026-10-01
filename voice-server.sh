@@ -3,21 +3,28 @@
 #
 #   ./start-voice-server.sh              # spustí, pokud neběží
 #   ./start-voice-server.sh --keep-awake # + zabrání uspání Macu (na dlouhé narace)
+#   ./start-voice-server.sh --lan        # poslouchá na celé síti (0.0.0.0), ne jen na tomto Macu
+#   ./start-voice-server.sh --lan --keep-awake  # obojí najednou — typické pro sdílený server
 #   ./start-voice-server.sh --check      # jen zjistí stav, nic nespouští
 #   ./start-voice-server.sh --stop       # zastaví server
 #
 # Je idempotentní: když už server běží, NIC neudělá a skončí s kódem 0.
 # Nikdy neshazuje běžící server — rozdělaná narace by přišla o rozdělanou kapitolu.
+#
+# POZOR u --lan: server nemá žádné přihlašování ani autentizaci. Poslouchá na
+# 0.0.0.0, takže ho vidí kdokoli ve stejné síti. Pouštěj to jen v síti, které
+# důvěřuješ (domácí/kancelářská LAN), nikdy na veřejné nebo hostovské Wi-Fi.
 
 set -u
 
-HOST=127.0.0.1
+DEFAULT_HOST=127.0.0.1
+LAN_HOST=0.0.0.0
+HOST=$DEFAULT_HOST
 PORT=8000
 ROOT=${0:A:h}
 PY="$ROOT/venv/bin/python"
 LOG="$ROOT/server.log"
 PIDFILE="$ROOT/server.pid"
-URL="http://$HOST:$PORT"
 
 # --- pomocné ---------------------------------------------------------------
 
@@ -26,23 +33,40 @@ URL="http://$HOST:$PORT"
 # spolehlivý test toho, jestli server žije; obsazený port ano.
 port_pid() { lsof -nP -tiTCP:$PORT -sTCP:LISTEN 2>/dev/null | head -1 }
 is_running()   { [[ -n $(port_pid) ]] }
-responds_now() { curl -fsS --max-time 3 "$URL/v1/models" >/dev/null 2>&1 }
+responds_now() { curl -fsS --max-time 3 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1 }
+
+# Adresa, na které je server vidět z ostatních Maců v síti. en0 je typicky
+# Wi-Fi/Ethernet, en1 záložní rozhraní; když se nepovede ani jedno, vrátíme
+# alespoň obecnou nápovědu místo prázdné adresy.
+lan_address() {
+  local ip
+  ip=$(ipconfig getifaddr en0 2>/dev/null)
+  [[ -z $ip ]] && ip=$(ipconfig getifaddr en1 2>/dev/null)
+  print -- "$ip"
+}
 
 die() { print -u2 -- "chyba: $*"; exit 1 }
 
 # --- přepínače -------------------------------------------------------------
 
 KEEP_AWAKE=0
+LAN=0
 MODE=start
 for arg in "$@"; do
   case "$arg" in
     --keep-awake) KEEP_AWAKE=1 ;;
+    --lan)        LAN=1 ;;
     --check)      MODE=check ;;
     --stop)       MODE=stop ;;
-    -h|--help)    sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
     *)            die "neznámý přepínač: $arg" ;;
   esac
 done
+
+if (( LAN )); then
+  HOST=$LAN_HOST
+fi
+URL="http://$HOST:$PORT"
 
 # --- stav / zastavení ------------------------------------------------------
 
@@ -135,6 +159,16 @@ if (( KEEP_AWAKE )); then
   nohup caffeinate -is -w "$SERVER_PID" >/dev/null 2>&1 &
   disown 2>/dev/null
   print -- "caffeinate aktivní — Mac se neuspí, dokud server běží"
+fi
+
+if (( LAN )); then
+  lan_ip=$(lan_address)
+  if [[ -n $lan_ip ]]; then
+    print -- "síť: z ostatních Maců použij  http://$lan_ip:$PORT"
+  else
+    print -- "síť: adresu zjistíš přes System Settings → Wi-Fi/Ethernet → Details, port $PORT"
+  fi
+  print -u2 -- "POZOR: server na 0.0.0.0 nemá žádné přihlašování — pouštěj jen na síti, které důvěřuješ."
 fi
 
 print -- "log: $LOG"

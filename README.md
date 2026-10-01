@@ -11,7 +11,8 @@ zdrojový kód je celý tady.
 
 **Obsah:** [Proč zvlášť](#proč-se-to-instaluje-zvlášť) ·
 [Co je potřeba](#co-je-potřeba) · [Instalace](#instalace) ·
-[Spuštění](#spuštění) · [Jak dlouho to trvá](#jak-dlouho-namlouvání-trvá) ·
+[Spuštění](#spuštění) · [Jeden server pro víc Maců](#jeden-server-pro-víc-maců) ·
+[Jak dlouho to trvá](#jak-dlouho-namlouvání-trvá) ·
 [Hlasy](#hlasy) · [Aktualizace](#aktualizace) ·
 [Když něco nefunguje](#když-něco-nefunguje) · [English](#english)
 
@@ -70,12 +71,35 @@ Další užitečné přepínače:
 voice-server.sh --check        # běží? nebo neběží?
 voice-server.sh --stop         # zastavit
 voice-server.sh --keep-awake   # nenechá Mac usnout, dokud server běží
+voice-server.sh --lan          # poslouchá na celé síti, ne jen na tomto Macu
 ```
 
 `--keep-awake` se hodí u dlouhých knih. Displej se uspat smí, počítač ne.
 
 Skript je **idempotentní**: když server už běží, druhé spuštění neudělá nic
 a hlavně ho neshodí. Rozdělaná kapitola tak nepřijde vniveč.
+
+### Jeden server pro víc Maců
+
+Máš Binder na víc Macích a nechceš mít Higgse stažený a spuštěný na každém?
+`--lan` pustí server na `0.0.0.0` místo `127.0.0.1` — bude vidět z celé místní
+sítě, ne jen z tohoto počítače:
+
+```sh
+voice-server.sh --lan --keep-awake
+```
+
+Skript po startu vypíše adresu, na které ho ostatní Macy najdou (zjištěnou
+přes `ipconfig getifaddr`), např. `http://192.168.1.23:8000`. V Binderu na tom
+druhém Macu ji zadej jako **Speech Server URL** v nastavení namlouvání.
+
+> **Server nemá žádné přihlašování.** Kdokoli v téže síti se k němu dostane a
+> může ho použít. Pouštěj `--lan` jen v síti, které důvěřuješ (domácí,
+> kancelářská) — nikdy na veřejné nebo hostovské Wi-Fi.
+
+Idempotence a `--check`/`--stop` fungují u `--lan` úplně stejně — skript
+pořád nikdy neshodí běžící server a kontrola stavu nic nespouští ani
+nezastavuje.
 
 ## Jak dlouho namlouvání trvá
 
@@ -263,6 +287,21 @@ It listens on `http://127.0.0.1:8000` and speaks the OpenAI-compatible
 `POST /v1/audio/speech` API, so it also works with anything else that targets
 that endpoint. **That endpoint's behaviour is unchanged** — an existing
 Binder install keeps working exactly as before.
+
+**Running it for more than one Mac:** `voice-server.sh --lan` binds `0.0.0.0`
+instead of `127.0.0.1`, so the server is reachable from other Macs on the
+same network — useful if you want one Mac to run Higgs for everyone's Binder
+instead of installing it on each machine. Combine it with `--keep-awake` for
+a shared, long-running server: `voice-server.sh --lan --keep-awake`. On
+start it prints the address to use from other machines (read via `ipconfig
+getifaddr en0`, falling back to `en1`). On another Mac, point Binder at it by
+setting the **Speech Server URL** to `http://<that-ip>:8000`. `--check` and
+`--stop`, and the idempotence guarantee (never kills a running server),
+behave identically with `--lan`.
+
+> **The server has no authentication.** Anyone on the same network can reach
+> and use it. Only run `--lan` on a network you trust (home, office) — never
+> on public or guest Wi-Fi.
 
 **Expect it to be slower than real time** — roughly 1.3× on an M2 Pro, so a
 10-hour book takes about 15 hours to narrate. Run it overnight with
