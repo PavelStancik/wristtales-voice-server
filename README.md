@@ -135,6 +135,26 @@ Macu jednou skončila v thrashingu (44 GB pageoutů, 1 h 44 min na 7,4 s zvuku).
 Selhání jednotlivého bloku v dávce (např. prázdný text) nezhroutí celý
 požadavek — vrátí se chyba jen u něj, ostatní bloky dorazí normálně.
 
+## Reference vložená do požadavku (0.6.0+)
+
+Binder běží v sandboxu a jeho nahrávky hlasů leží uvnitř jeho kontejneru.
+Server je vidí (`stat` projde), ale **neotevře** je (`open` dá `EPERM`) —
+mlx_audio pak spadl na `miniaudio.DecodeError` až PO odeslání odpovědi `200`
+a Binder viděl jen „cannot parse response“. Proto teď klient pošle nahrávku
+rovnou v požadavku.
+
+Obě cesty — `POST /v1/audio/speech` i `POST /v1/audio/speech/batch` — berou
+volitelné pole **`ref_audio_base64`**: standardní base64 celého WAV souboru.
+
+- Je-li přítomné, server ho použije a `ref_audio` (cestu) úplně ignoruje,
+  včetně kontroly, jestli soubor existuje. Bez něj se chování nemění, starší
+  Binder tedy funguje dál.
+- Neplatné base64 nebo prázdný obsah vrátí `400`, víc než 32 MB po dekódování
+  `413` — vždy hned, s JSON `detail`, nikdy až uprostřed streamu.
+- Server nahrávku uloží do `<tmp>/wristtales-voice-server-ref/<sha256>.wav`
+  (práva `0600`); stejná nahrávka se zapíše jen jednou a znovu se použije.
+  Soubory starší než 24 hodin se mažou při startu serveru.
+
 ## Kontrola namluveného textu
 
 Higgs občas přestane mluvit dřív, než dojde na konec bloku, a zbytek věty
@@ -325,6 +345,20 @@ successful `results[]` item. Items produced by the serial fallback after
 `batch_generate` raised are not seeded and echo `"seed": null`, as do error
 items and any response from a server older than 0.5.0. Omitting `seed`
 behaves exactly as before.
+
+**Inline reference audio (0.6.0+):** Binder is sandboxed and its voice-library
+clips live inside its container; this server can `stat()` them but not
+`open()` them (`EPERM`), so mlx_audio used to fail with a
+`miniaudio.DecodeError` *after* it had already returned `200` on the streamed
+response. Both `POST /v1/audio/speech` and `POST /v1/audio/speech/batch` now
+accept an optional `ref_audio_base64` — standard base64 of the complete WAV
+file. When present it is used and `ref_audio` (a path) is ignored entirely,
+including the file-exists check; when absent nothing changes, so older
+clients keep working. Invalid base64 or an empty payload returns `400`, more
+than 32 MB decoded returns `413`, both as JSON `detail` before any streaming
+starts. The clip is written to `<tmp>/wristtales-voice-server-ref/<sha256>.wav`
+(mode `0600`, identical clips reused); files older than 24 h are deleted at
+server startup. The payload is never logged.
 
 **Narration check:** Higgs sometimes stops before the end of a block and the
 rest of the sentence is silently missing; audio length does not reveal it (a

@@ -5,7 +5,8 @@ Binder 1.0 is live in the Mac App Store and talks to ``POST
 module never reimplements it — it imports mlx_audio's own ``app`` (and the
 inference machinery behind it) untouched and registers exactly one
 additional route on top: ``POST /v1/audio/speech/batch``. Same process, same
-model load, same FastAPI instance.
+model load, same FastAPI instance. Both routes also accept the reference clip
+inline as ``ref_audio_base64`` (see "Inline reference audio" below).
 
 Run it the same way ``voice-server.sh`` ran ``mlx_audio.server`` before:
 
@@ -19,15 +20,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import hashlib
 import io
+import json
 import logging
 import os
+import tempfile
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse
 
 from mlx_audio.audio_io import write as audio_write
 
@@ -65,6 +73,224 @@ DEFAULT_MAX_BATCH = 8
 MAX_BATCH = max(1, int(os.getenv("VOICE_SERVER_MAX_BATCH", str(DEFAULT_MAX_BATCH))))
 
 
+# ---------------------------------------------------------------------------
+# Inline reference audio (0.6.0)
+#
+# Binder is sandboxed and its voice-library clips live inside its container.
+# This process can stat() them but not open() them (EPERM), so mlx_audio died
+# with `miniaudio.DecodeError` AFTER it had already answered 200 on the
+# streamed response, and the client only saw "cannot parse response". The
+# client therefore sends the clip itself as `ref_audio_base64` (standard
+# base64 of the complete WAV file). We decode it into a private temp file and
+# hand the model a path it CAN open. `ref_audio` (a path) keeps working for
+# older clients; when both are present, the inline bytes win.
+
+# Decoded clips above this are refused (HTTP 413). A 30 s 24 kHz mono WAV is
+# ~1.4 MB; 32 MB leaves a lot of room while bounding memory and disk.
+MAX_REF_AUDIO_BYTES = 32 * 1024 * 1024
+# Matching base64 length (4 chars per 3 bytes, plus padding).
+_MAX_REF_AUDIO_B64_CHARS = (MAX_REF_AUDIO_BYTES + 2) // 3 * 4
+# Largest request body the single-route middleware will buffer: the base64
+# plus generous room for the rest of the (small) JSON.
+_MAX_SPEECH_BODY_BYTES = _MAX_REF_AUDIO_B64_CHARS + 1024 * 1024
+# Files untouched for longer than this are removed at startup.
+REF_AUDIO_MAX_AGE_SECONDS = 24 * 60 * 60
+REF_AUDIO_DIRNAME = "wristtales-voice-server-ref"
+SINGLE_SPEECH_PATH = "/v1/audio/speech"
+
+
+class ReferenceAudioError(Exception):
+    """A client mistake in ``ref_audio_base64``; maps to an HTTP error."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def ref_audio_dir() -> Path:
+    return Path(tempfile.gettempdir()) / REF_AUDIO_DIRNAME
+
+
+def cleanup_stale_ref_audio(
+    max_age_seconds: float = REF_AUDIO_MAX_AGE_SECONDS,
+    directory: Optional[Path] = None,
+) -> int:
+    """Delete regular files older than ``max_age_seconds``; return the count.
+
+    Called once at startup. Never called per request: a file may still be in
+    use by a running synthesis, and identical clips are reused by hash.
+    """
+    directory = directory if directory is not None else ref_audio_dir()
+    removed = 0
+    try:
+        entries = list(os.scandir(directory))
+    except FileNotFoundError:
+        return 0
+    cutoff = time.time() - max_age_seconds
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            if entry.stat().st_mtime < cutoff:
+                os.unlink(entry.path)
+                removed += 1
+        except OSError as exc:  # a file vanishing under us is fine
+            logger.warning("ref audio cleanup: could not remove %s (%s)", entry.path, exc)
+    if removed:
+        logger.info("ref audio cleanup: removed %d stale file(s)", removed)
+    return removed
+
+
+def materialize_reference_audio(b64: Any) -> str:
+    """Decode ``ref_audio_base64`` into a temp WAV and return its path.
+
+    The file is named by the sha256 of the bytes, so an identical clip sent
+    again (every batch of a chapter carries the same narrator) is written
+    once and reused. Raises ``ReferenceAudioError`` (400 / 413) on bad input.
+    """
+    if not isinstance(b64, str):
+        raise ReferenceAudioError(400, "ref_audio_base64 must be a base64 string")
+    b64 = b64.strip()
+    if not b64:
+        raise ReferenceAudioError(400, "ref_audio_base64 is empty")
+    if len(b64) > _MAX_REF_AUDIO_B64_CHARS:
+        raise ReferenceAudioError(
+            413,
+            f"ref_audio_base64 too large: maximum is {MAX_REF_AUDIO_BYTES} decoded bytes",
+        )
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ReferenceAudioError(
+            400, "ref_audio_base64 is not valid standard base64"
+        ) from None
+    if not data:
+        raise ReferenceAudioError(400, "ref_audio_base64 decodes to zero bytes")
+    if len(data) > MAX_REF_AUDIO_BYTES:
+        raise ReferenceAudioError(
+            413,
+            f"ref_audio_base64 too large: {len(data)} bytes, maximum is "
+            f"{MAX_REF_AUDIO_BYTES}",
+        )
+
+    directory = ref_audio_dir()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = directory / f"{hashlib.sha256(data).hexdigest()}.wav"
+    try:
+        if target.stat().st_size == len(data):
+            os.utime(target)  # keep a reused clip from looking stale at restart
+            return str(target)
+    except FileNotFoundError:
+        pass
+    # Write beside the target and rename into place: two concurrent requests
+    # with the same clip can never expose a half-written file.
+    tmp = directory / f".tmp-{uuid.uuid4().hex}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    logger.info("inline reference audio: %d bytes -> %s", len(data), target.name)
+    return str(target)
+
+
+class InlineReferenceAudioMiddleware:
+    """Pure ASGI middleware for mlx_audio's own ``POST /v1/audio/speech``.
+
+    Their ``SpeechRequest`` has no ``ref_audio_base64`` field and drops
+    unknown ones, so we rewrite the JSON body before they parse it:
+    ``ref_audio_base64`` is decoded to a temp file and replaced by
+    ``ref_audio`` pointing at it. Every other request passes through
+    untouched (not even buffered).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or scope["path"] != SINGLE_SPEECH_PATH
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > _MAX_SPEECH_BODY_BYTES:
+                await JSONResponse(
+                    {"detail": "request body too large"}, status_code=413
+                )(scope, receive, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+
+        if b"ref_audio_base64" in body:
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                parsed = None  # not ours to judge; mlx_audio answers 422
+            if isinstance(parsed, dict) and "ref_audio_base64" in parsed:
+                encoded = parsed.pop("ref_audio_base64")
+                if encoded is not None:
+                    try:
+                        parsed["ref_audio"] = await asyncio.to_thread(
+                            materialize_reference_audio, encoded
+                        )
+                    except ReferenceAudioError as exc:
+                        await JSONResponse(
+                            {"detail": exc.detail}, status_code=exc.status_code
+                        )(scope, receive, send)
+                        return
+                body = json.dumps(parsed).encode("utf-8")
+                scope = dict(scope)
+                scope["headers"] = [
+                    (k, v) for k, v in scope["headers"] if k.lower() != b"content-length"
+                ] + [(b"content-length", str(len(body)).encode("ascii"))]
+
+        replayed = False
+
+        async def replay_receive():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+_INLINE_REF_MIDDLEWARE_INSTALLED = False
+
+
+def _install_inline_ref_middleware() -> None:
+    """Add the middleware once. Must run before the app serves its first request."""
+    global _INLINE_REF_MIDDLEWARE_INSTALLED
+    if _INLINE_REF_MIDDLEWARE_INSTALLED:
+        return
+    app.add_middleware(InlineReferenceAudioMiddleware)
+    _INLINE_REF_MIDDLEWARE_INSTALLED = True
+
+
+_install_inline_ref_middleware()
+
+
 class BatchSpeechRequest(BaseModel):
     """Wire contract is fixed — the Swift client is built against this."""
 
@@ -79,6 +305,10 @@ class BatchSpeechRequest(BaseModel):
     # je snáší, takže se to projevilo jen na dávce a vypadalo to na problém
     # s modelem, ne se schématem.
     ref_audio: Optional[str] = None
+    # Inline alternative to `ref_audio` (0.6.0): standard base64 of the whole
+    # WAV file. When present it wins and `ref_audio` is ignored — the
+    # sandboxed Binder cannot hand this process a path it may open.
+    ref_audio_base64: Optional[str] = None
     ref_text: Optional[str] = None
     temperature: float = 0.9
     top_k: int = 50
@@ -354,7 +584,19 @@ async def tts_speech_batch(payload: BatchSpeechRequest) -> dict[str, Any]:
                 f"{MAX_BATCH} (set VOICE_SERVER_MAX_BATCH to raise it)"
             ),
         )
-    if payload.ref_audio is not None and not os.path.exists(payload.ref_audio):
+    if payload.ref_audio_base64 is not None:
+        # Inline clip wins over any path; the path is not even looked at.
+        try:
+            ref_path = await asyncio.to_thread(
+                materialize_reference_audio, payload.ref_audio_base64
+            )
+        except ReferenceAudioError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        # Drop the (multi-MB) base64 from the payload the worker carries.
+        payload = payload.model_copy(
+            update={"ref_audio": ref_path, "ref_audio_base64": None}
+        )
+    elif payload.ref_audio is not None and not os.path.exists(payload.ref_audio):
         raise HTTPException(
             status_code=400,
             detail=f"Reference audio file not found: {payload.ref_audio}",
@@ -400,6 +642,7 @@ def main() -> None:
 
     _ensure_batch_adapter_registered()
     _install_model_aliases()
+    cleanup_stale_ref_audio()
     mlx_server.main()
 
 
