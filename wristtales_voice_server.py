@@ -537,6 +537,85 @@ def _install_model_aliases() -> None:
     _ALIASES_INSTALLED = True
 
 
+# --------------------------------------------------------------------------
+# Capabilities (0.7.0)
+#
+# Binder is sandboxed and cannot install anything, so it needs a cheap way to
+# ask "is this server up, and does it have Whisper?" without loading a model.
+# ``GET /wristtales/capabilities`` answers from the filesystem alone.
+#
+# /v1/models is deliberately NOT extended with the Whisper id: it is mlx_audio's
+# list of *resident* models plus our TTS aliases, and clients iterate it to find
+# Higgs variants. A transcription id in there would be picked up as a TTS
+# choice, and it already appears on its own once Whisper has been loaded.
+
+WHISPER_MODEL_ID = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+SERVER_NAME = "wristtales-voice-server"
+VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
+
+
+def server_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def hf_hub_cache_dir() -> Path:
+    """The HuggingFace hub cache, resolved like huggingface_hub does.
+
+    Read from the environment on every call (huggingface_hub freezes it at
+    import time), in its order of precedence: HF_HUB_CACHE,
+    HUGGINGFACE_HUB_CACHE, HF_HOME/hub, XDG_CACHE_HOME/huggingface/hub,
+    ~/.cache/huggingface/hub.
+    """
+    env = os.environ
+    for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        if env.get(key):
+            return Path(env[key]).expanduser()
+    if env.get("HF_HOME"):
+        return Path(env["HF_HOME"]).expanduser() / "hub"
+    xdg = env.get("XDG_CACHE_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
+    return base / "huggingface" / "hub"
+
+
+def hf_model_cached(model_id: str) -> bool:
+    """True when a complete-looking snapshot of ``model_id`` is in the cache.
+
+    Never loads anything. A snapshot counts when it has a config.json and at
+    least one *.safetensors that resolves (``Path.exists`` follows the symlink
+    into blobs/, so a link left dangling by an interrupted download fails).
+    """
+    snapshots = hf_hub_cache_dir() / ("models--" + model_id.replace("/", "--")) / "snapshots"
+    try:
+        for snap in snapshots.iterdir():
+            if (snap / "config.json").exists() and any(
+                w.exists() for w in snap.glob("*.safetensors")
+            ):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def capabilities() -> dict[str, Any]:
+    return {
+        "server": SERVER_NAME,
+        "version": server_version(),
+        "tts": {"models": list(model_aliases())},
+        "transcription": {
+            "available": hf_model_cached(WHISPER_MODEL_ID),
+            "model": WHISPER_MODEL_ID,
+        },
+    }
+
+
+@app.get("/wristtales/capabilities")
+async def wristtales_capabilities() -> dict[str, Any]:
+    return capabilities()
+
+
 _BATCH_ADAPTER_REGISTERED = False
 
 

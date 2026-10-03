@@ -3,14 +3,44 @@
 #
 #   ./install.sh            # nainstaluje, nebo doinstaluje co chybí
 #   ./install.sh --update   # stáhne novou verzi z GitHubu a přeinstaluje
-#   ./install.sh --check    # jen ověří prostředí, nic nemění
+#   ./install.sh --check    # jen ověří prostředí a modely, nic nemění
+#
+# Bez klonování, jedním řádkem (naklonuje do ~/wristtales-voice-server
+# a spustí odtamtud tenhle skript):
+#
+#   curl -fsSL https://raw.githubusercontent.com/PavelStancik/wristtales-voice-server/main/install.sh | zsh
 #
 # Je idempotentní — spustit dvakrát je bezpečné. Nikdy nemaže model
 # z ~/.cache/huggingface; stažení 8,7 GB je to nejdražší na celém postupu.
+# Proměnné: SKIP_8BIT=1 přeskočí volitelný 8bit konvert;
+# WRISTTALES_DIR mění cíl klonování; WRISTTALES_REPO mění zdroj klonu.
 
 set -eu
 
-ROOT=${0:A:h}
+# --- bootstrap: spuštěno přes `curl | zsh`, mimo klon --------------------------
+# Tehdy $0 je "zsh" a vedle není žádný repozitář. Naklonujeme ho a předáme
+# řízení skriptu odtamtud (přepínače se předají dál).
+SELF_DIR=${0:A:h}
+if [[ ! -f $SELF_DIR/requirements.txt || ! -f $SELF_DIR/wristtales_voice_server.py ]]; then
+  DEST=${WRISTTALES_DIR:-$HOME/wristtales-voice-server}
+  REPO=${WRISTTALES_REPO:-https://github.com/PavelStancik/wristtales-voice-server.git}
+  command -v git >/dev/null 2>&1 \
+    || { print -u2 -- "\n✗ Chybí git. Spusť  xcode-select --install  a zkus to znovu."; exit 1 }
+  if [[ -d $DEST/.git ]]; then
+    print -- "Repozitář už je v $DEST — pokračuji z něj."
+  elif [[ -e $DEST ]]; then
+    print -u2 -- "\n✗ $DEST už existuje a není to klon tohoto repozitáře."
+    print -u2 -- "   Smaž ho, nebo zvol jiné místo:  WRISTTALES_DIR=~/jina/cesta"
+    exit 1
+  else
+    print -- "Klonuji $REPO do $DEST …"
+    git clone --quiet "$REPO" "$DEST" || { print -u2 -- "\n✗ git clone selhal"; exit 1 }
+  fi
+  exec zsh "$DEST/install.sh" "$@"
+fi
+
+ROOT=$SELF_DIR
+source "$ROOT/common.zsh"
 VENV="$ROOT/venv"
 PY="$VENV/bin/python"
 MODEL="bosonai/higgs-audio-v3-tts-4b"
@@ -36,7 +66,7 @@ done
 
 # --- 1. prostředí ----------------------------------------------------------
 
-bold "1/5  Kontrola počítače"
+bold "1/7  Kontrola počítače"
 
 [[ $(uname -s) == Darwin ]] || die "Tenhle server běží jen na macOS."
 
@@ -68,7 +98,7 @@ fi
 
 # --- 2. Python -------------------------------------------------------------
 
-bold "2/5  Hledání Pythonu"
+bold "2/7  Hledání Pythonu"
 
 # Systémový python3 z Xcode CLT bývá starý; jmenované verze mají přednost.
 PYBIN=""
@@ -91,13 +121,20 @@ if [[ $MODE == check ]]; then
   bold "\nProstředí vyhovuje."
   [[ -x $PY ]] && ok "server je nainstalovaný v $VENV" \
                || warn "server ještě není nainstalovaný — spusť ./install.sh"
+  hf_model_cached "$MODEL" && ok "Higgs: připraven (model je v cache)" \
+                           || warn "Higgs: chybí — stáhne ho ./install.sh (8,7 GB)"
+  whisper_cached && ok "Whisper: připraven" \
+                 || warn "Whisper: chybí — $WHISPER_MISSING_NOTE Doinstaluje ho ./install.sh (1,5 GB)"
+  [[ -f $ROOT/models/higgs-v3-8bit/model.safetensors ]] \
+    && ok "8bit konvert: připraven" \
+    || print -- "  · 8bit konvert: není (volitelný)"
   exit 0
 fi
 
 # --- 3. aktualizace zdrojáků ----------------------------------------------
 
 if [[ $MODE == update ]]; then
-  bold "3/5  Aktualizace z GitHubu"
+  bold "3/7  Aktualizace z GitHubu"
   if [[ -d "$ROOT/.git" ]]; then
     git -C "$ROOT" pull --ff-only || die "git pull neprošel — máš v repu vlastní změny?"
     ok "zdrojáky aktuální"
@@ -105,13 +142,13 @@ if [[ $MODE == update ]]; then
     warn "tohle není git repo, přeskakuji stažení novinek"
   fi
 else
-  bold "3/5  Zdrojáky"
+  bold "3/7  Zdrojáky"
   ok "používám, co leží v $ROOT"
 fi
 
 # --- 4. knihovny -----------------------------------------------------------
 
-bold "4/5  Instalace knihoven (několik minut, stahuje ~3 GB)"
+bold "4/7  Instalace knihoven (několik minut, stáhne ~1 GB)"
 
 if [[ ! -x $PY ]]; then
   "$PYBIN" -m venv "$VENV" || die "nepodařilo se vytvořit venv v $VENV"
@@ -136,7 +173,7 @@ ok "import prošel"
 
 # --- 5. model --------------------------------------------------------------
 
-bold "5/6  Stažení modelu ($MODEL, 8,7 GB)"
+bold "5/7  Hlasový model ($MODEL, 8,7 GB)"
 print -- "     Stahuje se jen jednou. Podruhé se vezme z ~/.cache/huggingface."
 
 "$PY" - "$MODEL" <<'PYDL' || die "stažení modelu selhalo"
@@ -146,24 +183,31 @@ path = snapshot_download(sys.argv[1])
 print(f"  ✓ model připraven: {path}")
 PYDL
 
+# --- 6. whisper ------------------------------------------------------------
+
 # Druhý, menší model: whisper pro kontrolu namluveného textu. Higgs občas
 # přestane mluvit dřív, než dojde na konec bloku, a z délky zvuku se to
 # poznat nedá (audit knihy ABCDE: 74 uříznutých bloků, délková kontrola
 # pustila všechny). Binder proto každý blok přepíše přes
-# /v1/audio/transcriptions a porovná s textem. mlx_audio potřebuje whisper
-# ve formátu s HF tokenizerem, proto -asr-fp16 a ne model balíčku mlx_whisper.
+# /v1/audio/transcriptions a porovná s textem; stejným endpointem přepisuje
+# i hlasový vzorek uživatele. mlx_audio potřebuje whisper ve formátu
+# s HF tokenizerem, proto -asr-fp16 a ne model balíčku mlx_whisper.
 # Selhání tady instalaci nezastaví: Binder bez tohoto modelu kontroluje
-# jen délku zvuku, jako dřív.
-WHISPER="mlx-community/whisper-large-v3-turbo-asr-fp16"
-print -- "     + $WHISPER (1,5 GB) pro kontrolu namluveného textu"
-"$PY" - "$WHISPER" <<'PYDL' || print -- "  ! whisper se nestáhl — Binder bude kontrolovat jen délku zvuku"
+# jen délku zvuku, jako dřív. Server o tom říká na /wristtales/capabilities.
+bold "\n6/7  Whisper ($WHISPER_MODEL, 1,5 GB)"
+print -- "     Kontrola, že namluvený text sedí; přepis hlasového vzorku."
+if whisper_cached; then
+  ok "už je v cache — přeskakuji stahování"
+else
+  "$PY" - "$WHISPER_MODEL" <<'PYDL' || warn "whisper se nestáhl"
 import sys
 from huggingface_hub import snapshot_download
 path = snapshot_download(sys.argv[1])
 print(f"  ✓ whisper připraven: {path}")
 PYDL
+fi
 
-# --- 6. 8bit konvert -------------------------------------------------------
+# --- 7. 8bit konvert -------------------------------------------------------
 
 # Proč se kvantizuje lokálně a nestahuje hotové: licence Higgse je
 # Research/Non-Commercial, takže odvozené váhy nikam nepřerozdělujeme.
@@ -176,7 +220,7 @@ PYDL
 
 CONVERT="$ROOT/models/higgs-v3-8bit"
 
-bold "\n6/6  8bit konvert (volitelný, ~4,4 GB)"
+bold "\n7/7  8bit konvert (volitelný, ~4,4 GB)"
 if [[ -f "$CONVERT/model.safetensors" ]]; then
   ok "konvert už existuje — přeskakuji"
 elif [[ "${SKIP_8BIT:-}" == "1" ]]; then
@@ -194,6 +238,13 @@ fi
 # --- hotovo ----------------------------------------------------------------
 
 bold "\nHotovo."
+if whisper_cached; then
+  ok "Whisper: ready (kontrola textu i přepis vzorku fungují)"
+else
+  warn "Whisper: missing — $WHISPER_MISSING_NOTE Zkus ./install.sh znovu."
+fi
+[[ -f $CONVERT/model.safetensors ]] && ok "8bit: ready" || print -- "  · 8bit: není (server pojede na bf16)"
+print -- ""
 print -- "Server spustíš takto:"
 print -- ""
 print -- "    $ROOT/voice-server.sh"

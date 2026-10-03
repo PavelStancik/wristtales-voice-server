@@ -1,12 +1,15 @@
 #!/bin/zsh
 # Spustí lokální hlasový server pro namlouvání v Binderu.
 #
-#   ./start-voice-server.sh              # spustí, pokud neběží
-#   ./start-voice-server.sh --keep-awake # + zabrání uspání Macu (na dlouhé narace)
-#   ./start-voice-server.sh --lan        # poslouchá na celé síti (0.0.0.0), ne jen na tomto Macu
-#   ./start-voice-server.sh --lan --keep-awake  # obojí najednou — typické pro sdílený server
-#   ./start-voice-server.sh --check      # jen zjistí stav, nic nespouští
-#   ./start-voice-server.sh --stop       # zastaví server
+#   ./voice-server.sh              # spustí, pokud neběží
+#   ./voice-server.sh --keep-awake # + zabrání uspání Macu (na dlouhé narace)
+#   ./voice-server.sh --lan        # poslouchá na celé síti (0.0.0.0), ne jen na tomto Macu
+#   ./voice-server.sh --lan --keep-awake  # obojí najednou — typické pro sdílený server
+#   ./voice-server.sh --check      # jen zjistí stav, nic nespouští
+#   ./voice-server.sh --stop       # zastaví server
+#
+# Port: výchozí 8000 (na něm Binder server hledá); pro zkoušku jinde
+#   VOICE_SERVER_PORT=8011 ./voice-server.sh
 #
 # Je idempotentní: když už server běží, NIC neudělá a skončí s kódem 0.
 # Nikdy neshazuje běžící server — rozdělaná narace by přišla o rozdělanou kapitolu.
@@ -20,7 +23,7 @@ set -u
 DEFAULT_HOST=127.0.0.1
 LAN_HOST=0.0.0.0
 HOST=$DEFAULT_HOST
-PORT=8000
+PORT=${VOICE_SERVER_PORT:-8000}
 ROOT=${0:A:h}
 PY="$ROOT/venv/bin/python"
 LOG="$ROOT/server.log"
@@ -45,6 +48,28 @@ lan_address() {
   print -- "$ip"
 }
 
+# Jeden řádek o tom, co server umí (GET /wristtales/capabilities, od 0.7.0):
+# verze, TTS modely a hlavně jestli je k dispozici Whisper. Mlčí, když server
+# právě počítá a neodpoví (to není chyba); starší server bez endpointu to řekne.
+capabilities_line() {
+  local out code json version models
+  out=$(curl -sS --max-time 3 -w '\n%{http_code}' "http://127.0.0.1:$PORT/wristtales/capabilities" 2>/dev/null) || return 0
+  code=${out##*$'\n'}
+  json=${out%$'\n'*}
+  if [[ $code == 404 ]]; then
+    print -- "schopnosti: starší server bez /wristtales/capabilities (aktualizuj: install.sh --update)"
+    return 0
+  fi
+  [[ $code == 200 ]] || return 0
+  version=$(print -r -- "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+  models=$(print -r -- "$json" | sed -n 's/.*"models":\[\([^]]*\)\].*/\1/p' | tr -d '"')
+  if [[ $json == *'"available":true'* ]]; then
+    print -- "schopnosti: verze $version · TTS: ${models:-?} · Whisper: ready"
+  else
+    print -- "schopnosti: verze $version · TTS: ${models:-?} · Whisper: missing — Binder bude kontrolovat jen délku zvuku (doinstaluj: install.sh)"
+  fi
+}
+
 die() { print -u2 -- "chyba: $*"; exit 1 }
 
 # --- přepínače -------------------------------------------------------------
@@ -58,7 +83,7 @@ for arg in "$@"; do
     --lan)        LAN=1 ;;
     --check)      MODE=check ;;
     --stop)       MODE=stop ;;
-    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
     *)            die "neznámý přepínač: $arg" ;;
   esac
 done
@@ -78,6 +103,7 @@ if [[ $MODE == check ]]; then
     else
       print -- "běží, ale právě počítá — neodpovídá  $URL  (pid $pid)"
     fi
+    capabilities_line
     exit 0
   fi
   print -- "neběží"
@@ -112,6 +138,7 @@ if [[ -n $pid ]]; then
   else
     print -- "server už běží na $URL (pid $pid), právě počítá — nechávám být"
   fi
+  capabilities_line
   exit 0
 fi
 
@@ -153,6 +180,8 @@ if ! responds_now; then
   tail -20 "$LOG" >&2
   exit 1
 fi
+
+capabilities_line
 
 if (( KEEP_AWAKE )); then
   # Drží Mac vzhůru, dokud běží server. Displej se uspat smí.
