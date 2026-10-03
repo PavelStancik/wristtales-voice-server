@@ -1,43 +1,46 @@
 #!/bin/zsh
-# Spustí lokální hlasový server pro namlouvání v Binderu.
+# Starts the local voice server that Binder uses for narration.
 #
-#   ./start-voice-server.sh              # spustí, pokud neběží
-#   ./start-voice-server.sh --keep-awake # + zabrání uspání Macu (na dlouhé narace)
-#   ./start-voice-server.sh --lan        # poslouchá na celé síti (0.0.0.0), ne jen na tomto Macu
-#   ./start-voice-server.sh --lan --keep-awake  # obojí najednou — typické pro sdílený server
-#   ./start-voice-server.sh --check      # jen zjistí stav, nic nespouští
-#   ./start-voice-server.sh --stop       # zastaví server
+#   ./voice-server.sh              # start it, unless it is already running
+#   ./voice-server.sh --keep-awake # + keep the Mac from sleeping (for long narrations)
+#   ./voice-server.sh --lan        # listen on the whole network (0.0.0.0), not just on this Mac
+#   ./voice-server.sh --lan --keep-awake  # both at once — typical for a shared server
+#   ./voice-server.sh --check      # only report the state, start nothing
+#   ./voice-server.sh --stop       # stop the server
 #
-# Je idempotentní: když už server běží, NIC neudělá a skončí s kódem 0.
-# Nikdy neshazuje běžící server — rozdělaná narace by přišla o rozdělanou kapitolu.
+# Port: 8000 by default (that is where Binder looks for the server); to try another
+#   VOICE_SERVER_PORT=8011 ./voice-server.sh
 #
-# POZOR u --lan: server nemá žádné přihlašování ani autentizaci. Poslouchá na
-# 0.0.0.0, takže ho vidí kdokoli ve stejné síti. Pouštěj to jen v síti, které
-# důvěřuješ (domácí/kancelářská LAN), nikdy na veřejné nebo hostovské Wi-Fi.
+# Idempotent: if the server is already running it does NOTHING and exits 0.
+# It never takes down a running server — a narration in progress would lose its chapter.
+#
+# WARNING with --lan: the server has no login or authentication. It listens on
+# 0.0.0.0, so anyone on the same network can reach it. Only run it on a network
+# you trust (home/office LAN), never on public or guest Wi-Fi.
 
 set -u
 
 DEFAULT_HOST=127.0.0.1
 LAN_HOST=0.0.0.0
 HOST=$DEFAULT_HOST
-PORT=8000
+PORT=${VOICE_SERVER_PORT:-8000}
 ROOT=${0:A:h}
 PY="$ROOT/venv/bin/python"
 LOG="$ROOT/server.log"
 PIDFILE="$ROOT/server.pid"
 
-# --- pomocné ---------------------------------------------------------------
+# --- helpers ---------------------------------------------------------------
 
-# POZOR: mlx_audio zpracovává požadavky sériově. Když právě syntetizuje blok,
-# neodpoví ani na /v1/models — klidně desítky sekund. HTTP odpověď proto NENÍ
-# spolehlivý test toho, jestli server žije; obsazený port ano.
+# NOTE: mlx_audio handles requests one at a time. While it is synthesising a block
+# it does not even answer /v1/models, sometimes for tens of seconds. An HTTP
+# answer is therefore NOT a reliable test of whether the server is alive; an occupied port is.
 port_pid() { lsof -nP -tiTCP:$PORT -sTCP:LISTEN 2>/dev/null | head -1 }
 is_running()   { [[ -n $(port_pid) ]] }
 responds_now() { curl -fsS --max-time 3 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1 }
 
-# Adresa, na které je server vidět z ostatních Maců v síti. en0 je typicky
-# Wi-Fi/Ethernet, en1 záložní rozhraní; když se nepovede ani jedno, vrátíme
-# alespoň obecnou nápovědu místo prázdné adresy.
+# The address at which the server is reachable from other Macs on the network.
+# en0 is typically Wi-Fi/Ethernet and en1 a fallback interface; if neither works
+# the result is empty and the caller prints a generic hint instead.
 lan_address() {
   local ip
   ip=$(ipconfig getifaddr en0 2>/dev/null)
@@ -45,9 +48,31 @@ lan_address() {
   print -- "$ip"
 }
 
+# One line about what the server can do (GET /wristtales/capabilities, since 0.7.0):
+# version, TTS models and above all whether Whisper is available. It stays silent
+# when the server is busy computing and does not answer (not an error); an older server without the endpoint says so.
+capabilities_line() {
+  local out code json version models
+  out=$(curl -sS --max-time 3 -w '\n%{http_code}' "http://127.0.0.1:$PORT/wristtales/capabilities" 2>/dev/null) || return 0
+  code=${out##*$'\n'}
+  json=${out%$'\n'*}
+  if [[ $code == 404 ]]; then
+    print -- "schopnosti: starší server bez /wristtales/capabilities (aktualizuj: install.sh --update)"
+    return 0
+  fi
+  [[ $code == 200 ]] || return 0
+  version=$(print -r -- "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+  models=$(print -r -- "$json" | sed -n 's/.*"models":\[\([^]]*\)\].*/\1/p' | tr -d '"')
+  if [[ $json == *'"available":true'* ]]; then
+    print -- "schopnosti: verze $version · TTS: ${models:-?} · Whisper: ready"
+  else
+    print -- "schopnosti: verze $version · TTS: ${models:-?} · Whisper: missing — Binder bude kontrolovat jen délku zvuku (doinstaluj: install.sh)"
+  fi
+}
+
 die() { print -u2 -- "chyba: $*"; exit 1 }
 
-# --- přepínače -------------------------------------------------------------
+# --- flags -----------------------------------------------------------------
 
 KEEP_AWAKE=0
 LAN=0
@@ -58,7 +83,7 @@ for arg in "$@"; do
     --lan)        LAN=1 ;;
     --check)      MODE=check ;;
     --stop)       MODE=stop ;;
-    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
     *)            die "neznámý přepínač: $arg" ;;
   esac
 done
@@ -68,7 +93,7 @@ if (( LAN )); then
 fi
 URL="http://$HOST:$PORT"
 
-# --- stav / zastavení ------------------------------------------------------
+# --- status / stop ---------------------------------------------------------
 
 if [[ $MODE == check ]]; then
   pid=$(port_pid)
@@ -78,6 +103,7 @@ if [[ $MODE == check ]]; then
     else
       print -- "běží, ale právě počítá — neodpovídá  $URL  (pid $pid)"
     fi
+    capabilities_line
     exit 0
   fi
   print -- "neběží"
@@ -89,8 +115,8 @@ if [[ $MODE == stop ]]; then
   [[ -z $pid ]] && { print -- "neběží, není co zastavovat"; exit 0 }
   print -- "zastavuji pid $pid …"
   kill "$pid" 2>/dev/null
-  # Čekáme na skutečný konec procesu, ne jen na uvolnění portu — port se
-  # uvolní o kousek dřív a hned nato by šel nastartovat druhý server.
+  # We wait for the process to really end, not just for the port to free up —
+  # the port is released slightly earlier, and a second server could then start right away.
   for i in {1..20}; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   if kill -0 "$pid" 2>/dev/null; then
     print -- "neodpovídá na TERM, posílám KILL …"
@@ -112,6 +138,7 @@ if [[ -n $pid ]]; then
   else
     print -- "server už běží na $URL (pid $pid), právě počítá — nechávám být"
   fi
+  capabilities_line
   exit 0
 fi
 
@@ -132,8 +159,8 @@ SERVER_PID=$!
 print -- "$SERVER_PID" > "$PIDFILE"
 disown 2>/dev/null
 
-# Čekání na připravenost. Model se načítá líně až při prvním požadavku,
-# takže /v1/models odpoví rychle — 60 s je s velkou rezervou.
+# Wait until it is ready. The model is loaded lazily on the first request,
+# so /v1/models answers quickly — 60 s is a generous margin.
 for i in {1..60}; do
   if responds_now; then
     print -- "připraveno za ${i} s  →  $URL  (pid $SERVER_PID)"
@@ -154,8 +181,10 @@ if ! responds_now; then
   exit 1
 fi
 
+capabilities_line
+
 if (( KEEP_AWAKE )); then
-  # Drží Mac vzhůru, dokud běží server. Displej se uspat smí.
+  # Keeps the Mac awake while the server runs. The display may still sleep.
   nohup caffeinate -is -w "$SERVER_PID" >/dev/null 2>&1 &
   disown 2>/dev/null
   print -- "caffeinate aktivní — Mac se neuspí, dokud server běží"
