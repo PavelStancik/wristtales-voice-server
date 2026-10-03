@@ -580,23 +580,41 @@ def hf_hub_cache_dir() -> Path:
     return base / "huggingface" / "hub"
 
 
-def hf_model_cached(model_id: str) -> bool:
-    """True when a complete-looking snapshot of ``model_id`` is in the cache.
+REQUIRED_SNAPSHOT_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
 
-    Never loads anything. A snapshot counts when it has a config.json and at
-    least one *.safetensors that resolves (``Path.exists`` follows the symlink
-    into blobs/, so a link left dangling by an interrupted download fails).
+
+def hf_snapshot_complete(snap: Path) -> bool:
+    """True when a cached snapshot directory holds a whole model.
+
+    Needs config.json, tokenizer.json and tokenizer_config.json, and the
+    weights: when ``model.safetensors.index.json`` exists every shard it names
+    must be present, otherwise at least one ``*.safetensors``. ``Path.is_file``
+    follows symlinks into blobs/, so a link left dangling by an interrupted
+    download counts as missing. common.zsh has the same rule for the install
+    scripts; tests/test_capabilities.py fails if the two ever disagree.
+    """
+    try:
+        if not all((snap / name).is_file() for name in REQUIRED_SNAPSHOT_FILES):
+            return False
+        index = snap / "model.safetensors.index.json"
+        if index.is_file():
+            shards = set(json.loads(index.read_text(encoding="utf-8")).get("weight_map", {}).values())
+            return bool(shards) and all((snap / shard).is_file() for shard in shards)
+        return any(w.is_file() for w in snap.glob("*.safetensors"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def hf_model_cached(model_id: str) -> bool:
+    """True when a complete snapshot of ``model_id`` is in the HF cache.
+
+    Never loads anything; a partial download is not reported as available.
     """
     snapshots = hf_hub_cache_dir() / ("models--" + model_id.replace("/", "--")) / "snapshots"
     try:
-        for snap in snapshots.iterdir():
-            if (snap / "config.json").exists() and any(
-                w.exists() for w in snap.glob("*.safetensors")
-            ):
-                return True
+        return any(hf_snapshot_complete(snap) for snap in snapshots.iterdir())
     except OSError:
-        pass
-    return False
+        return False
 
 
 def capabilities() -> dict[str, Any]:
@@ -612,7 +630,13 @@ def capabilities() -> dict[str, Any]:
 
 
 @app.get("/wristtales/capabilities")
-async def wristtales_capabilities() -> dict[str, Any]:
+def wristtales_capabilities() -> dict[str, Any]:
+    # A plain ``def`` so FastAPI runs it in the threadpool instead of on the
+    # event loop (it does a little file I/O). That is NOT a guarantee of a
+    # prompt answer: while a long synthesis occupies the process the server
+    # can be slow to accept the request at all (one block can take tens of
+    # seconds), so clients should use a generous timeout and treat a timeout
+    # as "busy", not as "capability missing".
     return capabilities()
 
 

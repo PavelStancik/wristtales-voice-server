@@ -27,7 +27,22 @@ if [[ ! -f $SELF_DIR/requirements.txt || ! -f $SELF_DIR/wristtales_voice_server.
   command -v git >/dev/null 2>&1 \
     || { print -u2 -- "\n✗ Chybí git. Spusť  xcode-select --install  a zkus to znovu."; exit 1 }
   if [[ -d $DEST/.git ]]; then
-    print -- "Repozitář už je v $DEST — pokračuji z něj."
+    # Existující klon použijeme jen, když je to opravdu tenhle repozitář
+    # (nebo ten z WRISTTALES_REPO) — jinak bychom spustili cizí install.sh.
+    norm() { local u=${1%/}; print -r -- "${u%.git}" }
+    ORIGIN=$(git -C "$DEST" remote get-url origin 2>/dev/null || true)
+    OFFICIAL=PavelStancik/wristtales-voice-server
+    if [[ -n $ORIGIN && ( $(norm "$ORIGIN") == $(norm "$REPO") \
+          || $(norm "$ORIGIN") == (https://github.com/|git@github.com:|ssh://git@github.com/)$OFFICIAL ) ]]; then
+      print -- "Repozitář už je v $DEST — stahuji novinky a pokračuji z něj."
+      git -C "$DEST" pull --ff-only --quiet \
+        || print -u2 -- "  ! git pull neprošel (offline, nebo vlastní změny v $DEST) — pokračuji s tím, co tam je."
+    else
+      print -u2 -- "\n✗ $DEST je git repozitář, ale ne tenhle (origin: ${ORIGIN:-žádný})."
+      print -u2 -- "   Čekal jsem $REPO"
+      print -u2 -- "   Zvol jiné místo:  WRISTTALES_DIR=~/jina/cesta"
+      exit 1
+    fi
   elif [[ -e $DEST ]]; then
     print -u2 -- "\n✗ $DEST už existuje a není to klon tohoto repozitáře."
     print -u2 -- "   Smaž ho, nebo zvol jiné místo:  WRISTTALES_DIR=~/jina/cesta"
@@ -59,7 +74,7 @@ for arg in "$@"; do
   case "$arg" in
     --update)  MODE=update ;;
     --check)   MODE=check ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
     *)         die "neznámý přepínač: $arg" ;;
   esac
 done
@@ -76,14 +91,27 @@ if [[ $(uname -m) != arm64 ]]; then
 fi
 ok "macOS na Apple Silicon"
 
-# Volný prostor. Model má 8,7 GB, závislosti (hlavně torch) další ~3 GB,
-# a bez rezervy se instalace utne uprostřed stahování.
-FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-if (( FREE_GB < 15 )); then
-  die "Na disku je volných jen ${FREE_GB} GB, potřeba je aspoň 15 GB
-     (model 8,7 GB + knihovny ~3 GB + rezerva)."
+# Volný prostor. Skutečný nárok plné instalace je ~16 GB: Higgs 8,7 GB +
+# Whisper 1,5 GB + knihovny (venv) ~1,2 GB + volitelný 8bit konvert 4,4 GB.
+# Brána počítá jen to, co ještě chybí (už stažený model znovu nestahujeme),
+# přidá rezervu 1,5 GB a SKIP_8BIT=1 snižuje nárok o konvert. Bez rezervy se
+# instalace utne uprostřed stahování. Čísla jsou v MB (df -m).
+CONVERT="$ROOT/models/higgs-v3-8bit"
+NEED_MB=1500
+[[ -x $VENV/bin/python ]]                || (( NEED_MB += 1300 ))
+hf_model_cached "$MODEL"                 || (( NEED_MB += 8900 ))
+whisper_cached                           || (( NEED_MB += 1600 ))
+if [[ ! -f $CONVERT/model.safetensors && ${SKIP_8BIT:-} != 1 ]]; then
+  (( NEED_MB += 4500 ))
 fi
-ok "volné místo: ${FREE_GB} GB"
+NEED_GB=$(( (NEED_MB + 1023) / 1024 ))
+FREE_GB=$(( $(df -m "$HOME" | awk 'NR==2 {print $4}') / 1024 ))
+if (( FREE_GB < NEED_GB )); then
+  die "Na disku je volných jen ${FREE_GB} GB, tahle instalace potřebuje asi ${NEED_GB} GB
+     (z toho chybějící části: Higgs 8,7 + Whisper 1,5 + knihovny ~1,2 + 8bit 4,4 GB, plus rezerva).
+     Celá instalace od nuly zabere ~16 GB; SKIP_8BIT=1 ušetří 4,4 GB."
+fi
+ok "volné místo: ${FREE_GB} GB (potřeba ${NEED_GB} GB)"
 
 # Paměť. Model v bf16 zabere při běhu kolem 10 GB.
 RAM_GB=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))
@@ -176,12 +204,22 @@ ok "import prošel"
 bold "5/7  Hlasový model ($MODEL, 8,7 GB)"
 print -- "     Stahuje se jen jednou. Podruhé se vezme z ~/.cache/huggingface."
 
-"$PY" - "$MODEL" <<'PYDL' || die "stažení modelu selhalo"
+# snapshot_download je idempotentní: úplný snapshot jen ověří, částečný
+# (přerušené stahování, chybějící shard nebo tokenizer) dotáhne. Proto běží
+# vždy, ne jen když cache vypadá prázdná.
+if "$PY" - "$MODEL" <<'PYDL'
 import sys
 from huggingface_hub import snapshot_download
 path = snapshot_download(sys.argv[1])
 print(f"  ✓ model připraven: {path}")
 PYDL
+then :
+elif hf_model_cached "$MODEL"; then
+  warn "kontrola na HuggingFace selhala (offline?) — používám model z cache"
+else
+  die "stažení modelu selhalo"
+fi
+hf_model_cached "$MODEL" || die "model se stáhl neúplný — spusť ./install.sh znovu"
 
 # --- 6. whisper ------------------------------------------------------------
 
@@ -196,15 +234,19 @@ PYDL
 # jen délku zvuku, jako dřív. Server o tom říká na /wristtales/capabilities.
 bold "\n6/7  Whisper ($WHISPER_MODEL, 1,5 GB)"
 print -- "     Kontrola, že namluvený text sedí; přepis hlasového vzorku."
-if whisper_cached; then
-  ok "už je v cache — přeskakuji stahování"
-else
-  "$PY" - "$WHISPER_MODEL" <<'PYDL' || warn "whisper se nestáhl"
+# Stejně jako u Higgse: vždy idempotentní snapshot_download, který doplní
+# i částečné stažení. Offline s úplnou cache jen upozorní.
+if "$PY" - "$WHISPER_MODEL" <<'PYDL'
 import sys
 from huggingface_hub import snapshot_download
 path = snapshot_download(sys.argv[1])
 print(f"  ✓ whisper připraven: {path}")
 PYDL
+then :
+elif whisper_cached; then
+  warn "kontrola na HuggingFace selhala (offline?) — používám whisper z cache"
+else
+  warn "whisper se nestáhl"
 fi
 
 # --- 7. 8bit konvert -------------------------------------------------------
@@ -217,8 +259,6 @@ fi
 # v /v1/models nenabídne "higgs-v3-8bit" a Binder u volby Rychlejší (8bit)
 # poctivě řekne, že ho server nemá. Nikdy nenabízíme jméno, které by při
 # syntéze spadlo.
-
-CONVERT="$ROOT/models/higgs-v3-8bit"
 
 bold "\n7/7  8bit konvert (volitelný, ~4,4 GB)"
 if [[ -f "$CONVERT/model.safetensors" ]]; then

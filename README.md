@@ -36,7 +36,7 @@ What `install.sh` actually checks, and stops on if it is not met:
 |---|---|
 | Mac | Apple Silicon (M1 or newer). The model runs on Metal; Intel is refused. |
 | Memory | at least **16 GB** (refused below that). 24 GB or more is recommended; between 16 and 24 you get a warning. |
-| Disk | at least **15 GB free** on the volume with your home folder, checked before anything is downloaded. A full install (Higgs 8.7 GB, Whisper 1.5 GB, libraries ~1.2 GB, optional 8-bit convert 4.4 GB) takes about 16 GB. |
+| Disk | free space on the volume with your home folder, checked before anything is downloaded. A full install from scratch takes about **16 GB** (Higgs 8.7 GB + Whisper 1.5 GB + libraries ~1.2 GB + optional 8-bit convert 4.4 GB), so the installer asks for about **18 GB** free (the sum plus a 1.5 GB reserve); with `SKIP_8BIT=1` about 13 GB. Parts already on disk are not counted again. |
 | Python | **3.11 or newer**. The installer tries `python3.14`, `3.13`, `3.12`, `3.11`, then `python3`. The pinned libraries were verified on 3.14. If none is found: `brew install python@3.13` ([Homebrew](https://brew.sh)). |
 | `git` | only for the clone (`xcode-select --install` provides it). |
 | macOS | 14 or newer is what MLX expects. The installer does not check this itself. |
@@ -112,7 +112,9 @@ curl -s http://127.0.0.1:8000/wristtales/capabilities
 
 - `tts.models` lists only the models actually served (`higgs-v3-8bit` only if the convert exists).
 - `transcription.available` is `true` when a complete Whisper snapshot is in the HuggingFace cache (`HF_HUB_CACHE`, `HF_HOME` and `XDG_CACHE_HOME` are honoured). It is a file check, not a trial load.
+- A *partial* download (interrupted, a missing tokenizer file, a missing shard of a sharded model) is reported as `false`; running `install.sh` again repairs it.
 - An older server answers `404` here. That is how a client tells "server too old" from "Whisper missing".
+- **While a long synthesis is running the answer can be late**, sometimes by tens of seconds, because the server works through requests one at a time. Clients should use a generous timeout and treat a timeout as "busy", not as "Whisper missing".
 
 `GET /v1/models` is deliberately unchanged: it lists the Higgs names and, once Whisper has been used, mlx_audio adds that resident model to the list as well. Do not infer Whisper's presence from it; use the capabilities endpoint.
 
@@ -189,19 +191,25 @@ Update (pulls the new version and installs what was added; models are not downlo
 ~/wristtales-voice-server/install.sh --update
 ```
 
+Running the one-line `curl … | zsh` command again on an existing install does the same: it pulls the latest version first (it refuses a folder whose `origin` is not this repository).
+
 A running server keeps the old code until you restart it: `voice-server.sh --stop && voice-server.sh` (not in the middle of a narration).
 
-Uninstall: stop the server, turn autostart off (above), delete the folder and, if you want the disk space back, the downloaded models. Nothing else is installed on your system.
+Uninstall: stop the server, turn autostart off (above) and delete the folder. Nothing else is installed on your system.
 
 ```sh
 ~/wristtales-voice-server/voice-server.sh --stop
 rm -rf ~/wristtales-voice-server
-cd ~/.cache/huggingface/hub && rm -rf models--bosonai--higgs-audio-v3-tts-4b \
-  models--mlx-community--whisper-large-v3-turbo-asr-fp16 \
-  models--mlx-community--S3TokenizerV2 models--mlx-community--snac_24khz
 ```
 
-If you set `HF_HOME` or `HF_HUB_CACHE`, the models are there instead.
+**Optional, only if you want the disk space back:** the downloaded models live in the HuggingFace cache (`~/.cache/huggingface/hub`, or wherever `HF_HUB_CACHE` / `HF_HOME` point). **That cache is shared with every other MLX, Whisper and HuggingFace tool on your Mac**, so do not delete the whole directory. Remove only the model folders you know nobody else uses, and re-downloading them later costs 8.7 GB and 1.5 GB again:
+
+```sh
+cd ~/.cache/huggingface/hub
+ls -d models--bosonai--higgs-audio-v3-tts-4b models--mlx-community--whisper-large-v3-turbo-asr-fp16
+# if you are sure no other tool uses them:
+# rm -rf models--bosonai--higgs-audio-v3-tts-4b models--mlx-community--whisper-large-v3-turbo-asr-fp16
+```
 
 ## When something does not work
 
@@ -257,7 +265,7 @@ Co `install.sh` opravdu kontroluje a na čem se zastaví, když to nesedí:
 |---|---|
 | Mac | s čipem Apple (M1 a novější). Model počítá přes Metal; na Intelu instalátor skončí. |
 | Paměť | aspoň **16 GB** (méně instalátor odmítne). Doporučeno 24 GB a víc; mezi 16 a 24 GB dostaneš varování. |
-| Disk | aspoň **15 GB volných** na svazku s domovskou složkou, kontroluje se před stahováním. Plná instalace (Higgs 8,7 GB, Whisper 1,5 GB, knihovny ~1,2 GB, volitelný 8bit konvert 4,4 GB) zabere asi 16 GB. |
+| Disk | volné místo na svazku s domovskou složkou, kontroluje se před stahováním. Plná instalace od nuly zabere asi **16 GB** (Higgs 8,7 GB + Whisper 1,5 GB + knihovny ~1,2 GB + volitelný 8bit konvert 4,4 GB), proto instalátor chce asi **18 GB** volných (součet plus rezerva 1,5 GB); se `SKIP_8BIT=1` asi 13 GB. Co už na disku je, se nepočítá znovu. |
 | Python | **3.11 nebo novější**. Instalátor zkouší `python3.14`, `3.13`, `3.12`, `3.11` a nakonec `python3`. Připnuté knihovny jsou ověřené na 3.14. Když žádný nenajde: `brew install python@3.13` ([Homebrew](https://brew.sh)). |
 | `git` | jen na klonování (dodá ho `xcode-select --install`). |
 | macOS | 14 a novější — to vyžaduje MLX. Instalátor to sám nekontroluje. |
@@ -333,7 +341,9 @@ curl -s http://127.0.0.1:8000/wristtales/capabilities
 
 - `tts.models` obsahuje jen modely, které server opravdu nabízí (`higgs-v3-8bit` jen když konvert existuje).
 - `transcription.available` je `true`, když je v cache HuggingFace kompletní snapshot Whisperu (respektují se `HF_HUB_CACHE`, `HF_HOME` i `XDG_CACHE_HOME`). Je to kontrola souborů, ne zkušební načtení.
+- *Částečné* stažení (přerušené, chybějící soubor tokenizeru, chybějící shard) se hlásí jako `false`; opětovné spuštění `install.sh` ho opraví.
 - Starší server tady vrací `404`. Podle toho klient pozná „server je starý“ od „Whisper chybí“.
+- **Během dlouhé syntézy může odpověď přijít pozdě**, klidně o desítky vteřin, protože server zpracovává požadavky jeden po druhém. Klient by měl použít štědrý timeout a jeho vypršení brát jako „server je zaneprázdněný“, ne jako „Whisper chybí“.
 
 `GET /v1/models` zůstává záměrně beze změny: vypisuje jména Higgse a poté, co se Whisper použije, mlx_audio přidá do seznamu i ten načtený model. Podle toho přítomnost Whisperu nepoznávej, použij endpoint schopností.
 
@@ -410,19 +420,25 @@ Aktualizace (stáhne novou verzi a doinstaluje, co přibylo; modely se znovu nes
 ~/wristtales-voice-server/install.sh --update
 ```
 
+Opakované spuštění jednořádkového `curl … | zsh` na existující instalaci dělá totéž: nejdřív stáhne nejnovější verzi (složku, jejíž `origin` není tenhle repozitář, odmítne).
+
 Běžící server drží starý kód, dokud ho nerestartuješ: `voice-server.sh --stop && voice-server.sh` (ne uprostřed namlouvání).
 
-Odinstalace: zastav server, vypni automatické spuštění (viz výše), smaž složku a, chceš-li zpět místo na disku, i stažené modely. Nic dalšího se do systému neinstaluje.
+Odinstalace: zastav server, vypni automatické spuštění (viz výše) a smaž složku. Nic dalšího se do systému neinstaluje.
 
 ```sh
 ~/wristtales-voice-server/voice-server.sh --stop
 rm -rf ~/wristtales-voice-server
-cd ~/.cache/huggingface/hub && rm -rf models--bosonai--higgs-audio-v3-tts-4b \
-  models--mlx-community--whisper-large-v3-turbo-asr-fp16 \
-  models--mlx-community--S3TokenizerV2 models--mlx-community--snac_24khz
 ```
 
-Pokud sis nastavil `HF_HOME` nebo `HF_HUB_CACHE`, jsou modely tam.
+**Volitelné, jen když chceš zpět místo na disku:** stažené modely jsou v cache HuggingFace (`~/.cache/huggingface/hub`, nebo kam míří `HF_HUB_CACHE` / `HF_HOME`). **Tu cache sdílí všechny ostatní nástroje MLX, Whisper a HuggingFace na tvém Macu**, takže nemaž celý adresář. Smaž jen složky modelů, o kterých víš, že je nikdo jiný nepoužívá; jejich opětovné stažení stojí zase 8,7 GB a 1,5 GB:
+
+```sh
+cd ~/.cache/huggingface/hub
+ls -d models--bosonai--higgs-audio-v3-tts-4b models--mlx-community--whisper-large-v3-turbo-asr-fp16
+# pokud jsi si jistý, že je nepoužívá nic jiného:
+# rm -rf models--bosonai--higgs-audio-v3-tts-4b models--mlx-community--whisper-large-v3-turbo-asr-fp16
+```
 
 ## Když něco nefunguje
 

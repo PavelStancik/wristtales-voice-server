@@ -4,6 +4,8 @@ No model is ever loaded; the Whisper check is a pure filesystem lookup in the
 HuggingFace cache, which these tests point at a temp directory.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,17 +23,44 @@ def clean_hf_env(tmp_path, monkeypatch):
     monkeypatch.setattr(wvs, "MODEL_DIR", tmp_path / "models")
 
 
-def make_snapshot(hub, *, weights=True, dangling=False, config=True):
-    snap = hub / WHISPER_DIR / "snapshots" / "abc123"
+def _link(hub, model_dir, snap, name, content=b"x", dangling=False):
+    """Put ``name`` in the snapshot as a symlink into blobs/, like huggingface_hub."""
+    blob = hub / model_dir / "blobs" / ("blob-" + name)
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    if not dangling:
+        blob.write_bytes(content)
+    (snap / name).symlink_to(blob)
+
+
+def make_snapshot(
+    hub,
+    *,
+    weights=True,
+    dangling=False,
+    config=True,
+    tokenizer=("tokenizer.json", "tokenizer_config.json"),
+    shards=None,
+    missing_shards=(),
+    model_dir=WHISPER_DIR,
+):
+    """A cached snapshot. ``shards`` makes it sharded: the index names every
+    shard, and those in ``missing_shards`` are left out."""
+    snap = hub / model_dir / "snapshots" / "abc123"
     snap.mkdir(parents=True)
     if config:
         (snap / "config.json").write_text("{}")
-    if weights:
-        blob = hub / WHISPER_DIR / "blobs" / "deadbeef"
-        blob.parent.mkdir(parents=True)
-        if not dangling:
-            blob.write_bytes(b"x")
-        (snap / "model.safetensors").symlink_to(blob)
+    for name in tokenizer:
+        (snap / name).write_text("{}")
+    if shards:
+        weight_map = {f"layer{i}.w": shard for i, shard in enumerate(shards)}
+        (snap / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {}, "weight_map": weight_map})
+        )
+        for shard in shards:
+            if shard not in missing_shards:
+                _link(hub, model_dir, snap, shard)
+    elif weights:
+        _link(hub, model_dir, snap, "model.safetensors", dangling=dangling)
     return snap
 
 
@@ -79,12 +108,48 @@ def test_default_location_is_home_cache(tmp_path, monkeypatch):
     assert wvs.hf_hub_cache_dir() == tmp_path / "home" / ".cache" / "huggingface" / "hub"
 
 
-@pytest.mark.parametrize(
-    "kwargs", [{"weights": False}, {"dangling": True}, {"config": False}]
-)
-def test_incomplete_snapshot_is_not_available(tmp_path, kwargs):
+PARTIAL_SNAPSHOTS = {
+    "no weights": {"weights": False},
+    "dangling weights": {"dangling": True},
+    "no config": {"config": False},
+    "missing tokenizer.json": {"tokenizer": ("tokenizer_config.json",)},
+    "missing tokenizer_config.json": {"tokenizer": ("tokenizer.json",)},
+    "no tokenizer at all": {"tokenizer": ()},
+    "sharded, one shard missing": {
+        "shards": ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+        "missing_shards": ["model-00002-of-00002.safetensors"],
+    },
+}
+
+
+@pytest.mark.parametrize("kwargs", PARTIAL_SNAPSHOTS.values(), ids=PARTIAL_SNAPSHOTS.keys())
+def test_partial_snapshot_is_not_available(tmp_path, kwargs):
     make_snapshot(tmp_path / "hf" / "hub", **kwargs)
     assert get().json()["transcription"]["available"] is False
+
+
+def test_complete_sharded_snapshot_is_available(tmp_path):
+    make_snapshot(
+        tmp_path / "hf" / "hub",
+        shards=["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+    )
+    assert get().json()["transcription"]["available"] is True
+
+
+def test_unreadable_shard_index_is_not_available(tmp_path):
+    snap = make_snapshot(tmp_path / "hf" / "hub")
+    (snap / "model.safetensors.index.json").write_text("{not json")
+    assert get().json()["transcription"]["available"] is False
+
+
+def test_a_second_complete_snapshot_is_enough(tmp_path):
+    hub = tmp_path / "hf" / "hub"
+    make_snapshot(hub, weights=False)  # abc123: partial
+    good = hub / WHISPER_DIR / "snapshots" / "def456"
+    good.mkdir()
+    for name in ("config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"):
+        (good / name).write_text("{}")
+    assert get().json()["transcription"]["available"] is True
 
 
 def test_empty_model_dir_without_snapshots(tmp_path):

@@ -18,14 +18,37 @@ hf_hub_cache() {
   fi
 }
 
-# hf_model_cached <org/name> — 0, když je v cache snapshot s config.json
-# a aspoň jedním *.safetensors, na který odkaz opravdu vede (přerušené
-# stahování nechává odkaz rozbitý a tím neprojde).
+# hf_snapshot_complete <snapshot-dir> — 0, jen když je snapshot úplný:
+#   * config.json, tokenizer.json a tokenizer_config.json existují (a odkazy
+#     opravdu vedou na soubor — přerušené stahování nechává odkaz rozbitý),
+#   * váhy: je-li model.safetensors.index.json, musí existovat KAŽDÝ shard,
+#     který jmenuje; jinak aspoň jeden *.safetensors.
+# Částečné stažení tím neprojde jako „ready“ a ./install.sh ho doplní.
+# Stejnou logiku má hf_snapshot_complete() ve wristtales_voice_server.py;
+# tests/test_capabilities.py hlídá, aby se nerozešly.
+hf_snapshot_complete() {
+  local snap=$1 f shard index="$1/model.safetensors.index.json"
+  local -a shards
+  for f in config.json tokenizer.json tokenizer_config.json; do
+    [[ -f $snap/$f ]] || return 1
+  done
+  if [[ -f $index ]]; then
+    shards=(${(f)"$(grep -o '"[^"]*\.safetensors"' "$index" 2>/dev/null | tr -d '"' | sort -u)"})
+    (( $#shards )) || return 1
+    for shard in $shards; do
+      [[ -f $snap/$shard ]] || return 1
+    done
+  else
+    [[ -n $(print -rl -- $snap/*.safetensors(N-.) 2>/dev/null) ]] || return 1
+  fi
+  return 0
+}
+
+# hf_model_cached <org/name> — 0, když je v cache aspoň jeden úplný snapshot.
 hf_model_cached() {
   local snap
   for snap in "$(hf_hub_cache)/models--${1//\//--}"/snapshots/*(N/); do
-    [[ -e $snap/config.json ]] || continue
-    [[ -n $(print -rl -- $snap/*.safetensors(N-.) 2>/dev/null) ]] && return 0
+    hf_snapshot_complete "$snap" && return 0
   done
   return 1
 }
