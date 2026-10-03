@@ -2,7 +2,7 @@
 
 # WristTales Voice Server
 
-A local text-to-speech server for **[Binder](https://apps.apple.com/app/wristtales-binder)**, the macOS audiobook binder. It narrates books in a natural voice on your own Mac.
+A local text-to-speech server for **[Binder](https://apps.apple.com/app/id6804788748)**, the macOS audiobook binder. It narrates books in a natural voice on your own Mac.
 
 Nothing is uploaded: your text and the finished audio never leave the computer, there is no account, no API key and no per-minute charge. The server is free and all of its source is here.
 
@@ -223,7 +223,7 @@ If you set `HF_HOME` or `HF_HUB_CACHE`, the models are there instead.
 
 [⬆ English](#wristtales-voice-server)
 
-**WristTales Voice Server** je lokální hlasový server pro **[Binder](https://apps.apple.com/app/wristtales-binder)** — namlouvá knihy přirozeným hlasem přímo na tvém Macu.
+**WristTales Voice Server** je lokální hlasový server pro **[Binder](https://apps.apple.com/app/id6804788748)** — namlouvá knihy přirozeným hlasem přímo na tvém Macu.
 
 Nic se nikam neposílá: text ani hotový zvuk neopustí počítač, není potřeba žádný účet ani API klíč a nic se neplatí za minutu. Server je zdarma a jeho zdrojový kód je celý tady.
 
