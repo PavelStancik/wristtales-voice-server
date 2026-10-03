@@ -1,11 +1,11 @@
-# Společné pomocné funkce pro install.sh a voice-server.sh (zdrojuje se, nespouští).
+# Shared helper functions for install.sh and voice-server.sh (sourced, not executed).
 #
-# Zjišťují, jestli je model v cache HuggingFace — bez Pythonu, bez sítě a bez
-# načítání modelu, takže odpoví okamžitě i na stroji, kde ještě není venv.
-# Cache se hledá stejně jako to dělá huggingface_hub (a tedy mlx_audio):
+# They tell whether a model is in the HuggingFace cache — without Python, without the network and without
+# loading the model, so they answer instantly even on a machine that has no venv yet.
+# The cache is located the way huggingface_hub does it (and therefore mlx_audio):
 # HF_HUB_CACHE, HUGGINGFACE_HUB_CACHE, HF_HOME/hub, XDG_CACHE_HOME/huggingface/hub,
-# nakonec ~/.cache/huggingface/hub. Stejnou logiku má hf_hub_cache_dir()
-# ve wristtales_voice_server.py — drž je v souladu.
+# finally ~/.cache/huggingface/hub. hf_hub_cache_dir() in
+# wristtales_voice_server.py has the same logic — keep them in sync.
 
 WHISPER_MODEL="mlx-community/whisper-large-v3-turbo-asr-fp16"
 
@@ -18,14 +18,14 @@ hf_hub_cache() {
   fi
 }
 
-# hf_snapshot_complete <snapshot-dir> — 0, jen když je snapshot úplný:
-#   * config.json, tokenizer.json a tokenizer_config.json existují (a odkazy
-#     opravdu vedou na soubor — přerušené stahování nechává odkaz rozbitý),
-#   * váhy: je-li model.safetensors.index.json, musí existovat KAŽDÝ shard,
-#     který jmenuje; jinak aspoň jeden *.safetensors.
-# Částečné stažení tím neprojde jako „ready“ a ./install.sh ho doplní.
-# Stejnou logiku má hf_snapshot_complete() ve wristtales_voice_server.py;
-# tests/test_capabilities.py hlídá, aby se nerozešly.
+# hf_snapshot_complete <snapshot-dir> — returns 0 only when the snapshot is complete:
+#   * config.json, tokenizer.json and tokenizer_config.json exist (and the links
+#     really lead to a file — an interrupted download leaves a dangling link),
+#   * weights: if model.safetensors.index.json exists, EVERY shard it names
+#     must exist; otherwise at least one *.safetensors.
+# A partial download therefore does not pass as "ready" and ./install.sh completes it.
+# hf_snapshot_complete() in wristtales_voice_server.py has the same logic;
+# tests/test_install_scripts.py fails if the two ever drift apart.
 hf_snapshot_complete() {
   local snap=$1 f shard index="$1/model.safetensors.index.json"
   local -a shards
@@ -44,7 +44,7 @@ hf_snapshot_complete() {
   return 0
 }
 
-# hf_model_cached <org/name> — 0, když je v cache aspoň jeden úplný snapshot.
+# hf_model_cached <org/name> — returns 0 when the cache has at least one complete snapshot.
 hf_model_cached() {
   local snap
   for snap in "$(hf_hub_cache)/models--${1//\//--}"/snapshots/*(N/); do

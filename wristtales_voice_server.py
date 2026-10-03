@@ -296,14 +296,14 @@ class BatchSpeechRequest(BaseModel):
 
     model: str
     inputs: list[str]
-    # OBĚ jsou volitelná, protože klient je posílá podmíněně:
-    # OpenAICompatibleSynthesizer píše `ref_audio` jen `if let
-    # referenceAudioURL` a `ref_text` jen `if let referenceText`. Uživatel,
-    # který si vybral vlastní nahrávku bez přepisu, tedy `ref_text` neposílá
-    # vůbec — a dokud tu byla povinná, KAŽDÝ jeho dávkový požadavek padal na
-    # 422 a narace se nerozjela. Jednoblokový /v1/audio/speech od mlx_audio
-    # je snáší, takže se to projevilo jen na dávce a vypadalo to na problém
-    # s modelem, ne se schématem.
+    # BOTH are optional because the client sends them conditionally:
+    # OpenAICompatibleSynthesizer writes `ref_audio` only `if let
+    # referenceAudioURL` and `ref_text` only `if let referenceText`. A user
+    # who picked their own recording without a transcript therefore sends no
+    # `ref_text` at all, and while it was required EVERY batch request from
+    # them failed with 422 and narration never started. mlx_audio's
+    # single-block /v1/audio/speech tolerates this, so it only showed up on
+    # the batch route and looked like a model problem, not a schema one.
     ref_audio: Optional[str] = None
     # Inline alternative to `ref_audio` (0.6.0): standard base64 of the whole
     # WAV file. When present it wins and `ref_audio` is ignored — the
@@ -402,7 +402,7 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
                 for item in model.batch_generate(
                     texts=valid_texts,
                     ref_audio_codes=ref_audio_codes,
-                    ref_text=req.ref_text,  # None projde beze změny
+                    ref_text=req.ref_text,  # None passes through unchanged
                     temperature=req.temperature,
                     top_k=req.top_k,
                     max_new_tokens=req.max_new_tokens,
@@ -467,24 +467,26 @@ class BatchTTSExecutionAdapter(BaseModelExecutionAdapter):
 
 
 # --------------------------------------------------------------------------
-# Stabilní jména modelů
+# Stable model names
 #
-# Binder nabízí tři volby: bf16, 8bit a Vlastní… Jen ta třetí je textové
-# pole; první dvě musí být pevné, jinak si uživatel nastavením rozbije to,
-# co mu nainstaloval installer. Aby mohly být pevné, nesmí to být CESTY —
-# absolutní cesta platí jen na stroji, kde vznikla, a Binder o disku serveru
-# nic neví (ani vědět nemá: je v sandboxu a mluví jen přes localhost).
+# Binder offers three choices: bf16, 8bit and Custom... Only the third is a
+# text field; the first two must be fixed, otherwise the user's settings can
+# break what the installer set up. To be fixed they cannot be PATHS: an
+# absolute path is only valid on the machine where it was made, and Binder
+# knows nothing about the server's disk (and is not supposed to: it is
+# sandboxed and only talks over localhost).
 #
-# mlx_audio žádné aliasy nemá — ``load_model()`` bere buď HF identifikátor,
-# nebo cestu. Tuhle jednu vrstvu tedy přidáváme my, a to obalením
-# ``model_provider``, ne úpravou jejich kódu: všechny endpointy včetně
-# ``/v1/audio/speech`` chodí přes ``model_provider.load_model`` (server.py
-# ``_load_model_for_inference``), takže stačí obalit tu jedinou metodu.
+# mlx_audio has no aliases: ``load_model()`` takes either an HF identifier
+# or a path. So we add this one layer ourselves, by wrapping
+# ``model_provider`` rather than patching their code: every endpoint,
+# ``/v1/audio/speech`` included, goes through ``model_provider.load_model``
+# (server.py ``_load_model_for_inference``), so wrapping that single method
+# is enough.
 #
-# 8bit se nabízí, jen když konvert na disku SKUTEČNĚ je. Nabízet jméno,
-# které při syntéze spadne, je horší než ho nenabízet vůbec — Binder na
-# prázdnou odpověď umí zareagovat ("Server nenabízí 8bit konvert"), na
-# selhání uprostřed dlouhé narace ne.
+# 8bit is offered only when the convert REALLY exists on disk. Offering a
+# name that then fails during synthesis is worse than not offering it at
+# all: Binder can react to an empty answer ("the server doesn't offer the
+# 8bit convert"), but not to a failure in the middle of a long narration.
 
 MODEL_DIR = Path(
     os.environ.get("WRISTTALES_MODEL_DIR", Path(__file__).resolve().parent / "models")
@@ -496,7 +498,7 @@ BF16_ALIAS = "higgs-v3-bf16"
 
 
 def model_aliases() -> dict[str, str]:
-    """Alias -> co se doopravdy načte. 8bit jen když existuje."""
+    """Alias -> what is really loaded. 8bit only when the convert exists."""
     aliases = {BF16_ALIAS: BF16_MODEL_ID}
     convert = MODEL_DIR / EIGHT_BIT_ALIAS
     if (convert / "model.safetensors").is_file():
@@ -512,7 +514,7 @@ _ALIASES_INSTALLED = False
 
 
 def _install_model_aliases() -> None:
-    """Obalí model_provider tak, aby aliasy platily pro všechny endpointy."""
+    """Wrap model_provider so the aliases apply to every endpoint."""
     global _ALIASES_INSTALLED
     if _ALIASES_INSTALLED:
         return
@@ -528,8 +530,8 @@ def _install_model_aliases() -> None:
 
     async def available_with_aliases():
         listed = list(await original_available())
-        # Aliasy patří na začátek: Binder bere první shodu a chceme, aby
-        # viděl stabilní jméno, ne cestu, pod kterou je model rezidentní.
+        # Aliases go first: Binder takes the first match and we want it to
+        # see the stable name, not the path the model is resident under.
         return list(model_aliases()) + [m for m in listed if m not in model_aliases()]
 
     model_provider.load_model = load_with_alias
@@ -705,11 +707,12 @@ async def tts_speech_batch(payload: BatchSpeechRequest) -> dict[str, Any]:
             detail=f"Reference audio file not found: {payload.ref_audio}",
         )
     if payload.ref_audio is None:
-        # Higgs je klonovací model: BEZ reference si losuje mluvčího, a to
-        # u každého požadavku znovu — v dávce tedy může každý blok přečíst
-        # jiný hlas. Neodmítáme to (jednoblokový endpoint to taky dovolí a
-        # Binder má na to vlastní potvrzovací krok), ale ať je to v logu,
-        # až se někdo bude divit, proč kapitola střídá vypravěče.
+        # Higgs is a cloning model: WITHOUT a reference it samples a speaker
+        # anew for every request, so in a batch each block may be read in a
+        # different voice. We don't reject it (the single-block endpoint
+        # allows it too, and Binder has its own confirmation step for it),
+        # but it should be in the log for when someone wonders why a chapter
+        # switches narrators.
         logger.warning(
             "batch synth without ref_audio: the speaker is sampled per "
             "request, so blocks in this batch may not share a voice"

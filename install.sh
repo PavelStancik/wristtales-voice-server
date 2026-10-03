@@ -1,25 +1,25 @@
 #!/bin/zsh
-# Nainstaluje (nebo zaktualizuje) lokální hlasový server pro Binder.
+# Installs (or updates) the local voice server for Binder.
 #
-#   ./install.sh            # nainstaluje, nebo doinstaluje co chybí
-#   ./install.sh --update   # stáhne novou verzi z GitHubu a přeinstaluje
-#   ./install.sh --check    # jen ověří prostředí a modely, nic nemění
+#   ./install.sh            # install, or install whatever is missing
+#   ./install.sh --update   # pull the new version from GitHub and reinstall
+#   ./install.sh --check    # only verify the environment and models, change nothing
 #
-# Bez klonování, jedním řádkem (naklonuje do ~/wristtales-voice-server
-# a spustí odtamtud tenhle skript):
+# Without cloning first, in one line (clones into ~/wristtales-voice-server
+# and runs this script from there):
 #
 #   curl -fsSL https://raw.githubusercontent.com/PavelStancik/wristtales-voice-server/main/install.sh | zsh
 #
-# Je idempotentní — spustit dvakrát je bezpečné. Nikdy nemaže model
-# z ~/.cache/huggingface; stažení 8,7 GB je to nejdražší na celém postupu.
-# Proměnné: SKIP_8BIT=1 přeskočí volitelný 8bit konvert;
-# WRISTTALES_DIR mění cíl klonování; WRISTTALES_REPO mění zdroj klonu.
+# Idempotent — running it twice is safe. It never deletes a model
+# from ~/.cache/huggingface; the 8.7 GB download is the costliest part of the whole procedure.
+# Variables: SKIP_8BIT=1 skips the optional 8bit convert;
+# WRISTTALES_DIR changes the clone destination; WRISTTALES_REPO changes the clone source.
 
 set -eu
 
-# --- bootstrap: spuštěno přes `curl | zsh`, mimo klon --------------------------
-# Tehdy $0 je "zsh" a vedle není žádný repozitář. Naklonujeme ho a předáme
-# řízení skriptu odtamtud (přepínače se předají dál).
+# --- bootstrap: run via `curl | zsh`, outside a clone --------------------------
+# Then $0 is "zsh" and there is no repository next to it. We clone it and hand
+# control to the script from there (the flags are passed on).
 SELF_DIR=${0:A:h}
 if [[ ! -f $SELF_DIR/requirements.txt || ! -f $SELF_DIR/wristtales_voice_server.py ]]; then
   DEST=${WRISTTALES_DIR:-$HOME/wristtales-voice-server}
@@ -27,8 +27,8 @@ if [[ ! -f $SELF_DIR/requirements.txt || ! -f $SELF_DIR/wristtales_voice_server.
   command -v git >/dev/null 2>&1 \
     || { print -u2 -- "\n✗ Chybí git. Spusť  xcode-select --install  a zkus to znovu."; exit 1 }
   if [[ -d $DEST/.git ]]; then
-    # Existující klon použijeme jen, když je to opravdu tenhle repozitář
-    # (nebo ten z WRISTTALES_REPO) — jinak bychom spustili cizí install.sh.
+    # We reuse an existing clone only if it really is this repository
+    # (or the one from WRISTTALES_REPO) — otherwise we would run a foreign install.sh.
     norm() { local u=${1%/}; print -r -- "${u%.git}" }
     ORIGIN=$(git -C "$DEST" remote get-url origin 2>/dev/null || true)
     OFFICIAL=PavelStancik/wristtales-voice-server
@@ -60,8 +60,8 @@ VENV="$ROOT/venv"
 PY="$VENV/bin/python"
 MODEL="bosonai/higgs-audio-v3-tts-4b"
 
-# Nejnižší Python, na kterém mlx-audio 0.4.7 rozumně běží. Novější je lepší,
-# ale 3.12+ nemá pkg_resources — to řeší setuptools<81 v requirements.txt.
+# The lowest Python on which mlx-audio 0.4.7 runs reasonably. Newer is better,
+# but 3.12+ has no pkg_resources — setuptools<81 in requirements.txt handles that.
 MIN_MINOR=11
 
 bold() { print -- "\033[1m$*\033[0m" }
@@ -79,7 +79,7 @@ for arg in "$@"; do
   esac
 done
 
-# --- 1. prostředí ----------------------------------------------------------
+# --- 1. environment --------------------------------------------------------
 
 bold "1/7  Kontrola počítače"
 
@@ -91,11 +91,12 @@ if [[ $(uname -m) != arm64 ]]; then
 fi
 ok "macOS na Apple Silicon"
 
-# Volný prostor. Skutečný nárok plné instalace je ~16 GB: Higgs 8,7 GB +
-# Whisper 1,5 GB + knihovny (venv) ~1,2 GB + volitelný 8bit konvert 4,4 GB.
-# Brána počítá jen to, co ještě chybí (už stažený model znovu nestahujeme),
-# přidá rezervu 1,5 GB a SKIP_8BIT=1 snižuje nárok o konvert. Bez rezervy se
-# instalace utne uprostřed stahování. Čísla jsou v MB (df -m).
+# Free space. The real need of a full install is ~16 GB: Higgs 8.7 GB +
+# Whisper 1.5 GB + libraries (venv) ~1.2 GB + optional 8bit convert 4.4 GB.
+# The gate counts only what is still missing (a model already downloaded is
+# not downloaded again), adds a 1.5 GB reserve, and SKIP_8BIT=1 lowers the
+# need by the convert. Without a reserve the install gets cut off in the
+# middle of a download. The numbers are in MB (df -m).
 CONVERT="$ROOT/models/higgs-v3-8bit"
 NEED_MB=1500
 [[ -x $VENV/bin/python ]]                || (( NEED_MB += 1300 ))
@@ -113,7 +114,7 @@ if (( FREE_GB < NEED_GB )); then
 fi
 ok "volné místo: ${FREE_GB} GB (potřeba ${NEED_GB} GB)"
 
-# Paměť. Model v bf16 zabere při běhu kolem 10 GB.
+# Memory. The bf16 model takes around 10 GB while running.
 RAM_GB=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))
 if (( RAM_GB < 16 )); then
   die "Mac má ${RAM_GB} GB paměti; model potřebuje aspoň 16 GB."
@@ -128,7 +129,7 @@ fi
 
 bold "2/7  Hledání Pythonu"
 
-# Systémový python3 z Xcode CLT bývá starý; jmenované verze mají přednost.
+# The system python3 from the Xcode CLT is often old; the named versions take priority.
 PYBIN=""
 for cand in python3.14 python3.13 python3.12 python3.11 python3; do
   command -v "$cand" >/dev/null 2>&1 || continue
@@ -159,7 +160,7 @@ if [[ $MODE == check ]]; then
   exit 0
 fi
 
-# --- 3. aktualizace zdrojáků ----------------------------------------------
+# --- 3. source update ------------------------------------------------------
 
 if [[ $MODE == update ]]; then
   bold "3/7  Aktualizace z GitHubu"
@@ -174,7 +175,7 @@ else
   ok "používám, co leží v $ROOT"
 fi
 
-# --- 4. knihovny -----------------------------------------------------------
+# --- 4. libraries ----------------------------------------------------------
 
 bold "4/7  Instalace knihoven (několik minut, stáhne ~1 GB)"
 
@@ -190,8 +191,8 @@ fi
   || die "instalace knihoven selhala — vypiš si podrobnosti bez --quiet"
 ok "knihovny nainstalovány"
 
-# Ověření, že se to opravdu naimportuje. pip může skončit s nulou a modul
-# přesto spadne — typicky právě na chybějícím pkg_resources.
+# Verify that it really imports. pip can exit with zero and the module still
+# fail — typically exactly on a missing pkg_resources.
 "$PY" -W ignore - <<'PYCHECK' || die "knihovny se nainstalovaly, ale nejdou naimportovat"
 import importlib, sys
 for module in ("mlx", "mlx_audio", "webrtcvad", "fastapi", "uvicorn"):
@@ -204,9 +205,9 @@ ok "import prošel"
 bold "5/7  Hlasový model ($MODEL, 8,7 GB)"
 print -- "     Stahuje se jen jednou. Podruhé se vezme z ~/.cache/huggingface."
 
-# snapshot_download je idempotentní: úplný snapshot jen ověří, částečný
-# (přerušené stahování, chybějící shard nebo tokenizer) dotáhne. Proto běží
-# vždy, ne jen když cache vypadá prázdná.
+# snapshot_download is idempotent: it only verifies a complete snapshot and
+# completes a partial one (interrupted download, missing shard or tokenizer).
+# That is why it always runs, not only when the cache looks empty.
 if "$PY" - "$MODEL" <<'PYDL'
 import sys
 from huggingface_hub import snapshot_download
@@ -223,19 +224,20 @@ hf_model_cached "$MODEL" || die "model se stáhl neúplný — spusť ./install.
 
 # --- 6. whisper ------------------------------------------------------------
 
-# Druhý, menší model: whisper pro kontrolu namluveného textu. Higgs občas
-# přestane mluvit dřív, než dojde na konec bloku, a z délky zvuku se to
-# poznat nedá (audit knihy ABCDE: 74 uříznutých bloků, délková kontrola
-# pustila všechny). Binder proto každý blok přepíše přes
-# /v1/audio/transcriptions a porovná s textem; stejným endpointem přepisuje
-# i hlasový vzorek uživatele. mlx_audio potřebuje whisper ve formátu
-# s HF tokenizerem, proto -asr-fp16 a ne model balíčku mlx_whisper.
-# Selhání tady instalaci nezastaví: Binder bez tohoto modelu kontroluje
-# jen délku zvuku, jako dřív. Server o tom říká na /wristtales/capabilities.
+# A second, smaller model: whisper, for checking the narrated text. Higgs
+# sometimes stops speaking before it reaches the end of a block, and audio
+# length cannot reveal it (audit of book ABCDE: 74 truncated blocks, the
+# length check let all of them through). So Binder transcribes every block
+# via /v1/audio/transcriptions and compares it with the text; the same
+# endpoint transcribes the user's voice sample. mlx_audio needs whisper in
+# the format with an HF tokenizer, hence -asr-fp16 and not the mlx_whisper
+# package's model.
+# A failure here does not stop the install: without this model Binder only
+# checks audio length, as before. The server reports it on /wristtales/capabilities.
 bold "\n6/7  Whisper ($WHISPER_MODEL, 1,5 GB)"
 print -- "     Kontrola, že namluvený text sedí; přepis hlasového vzorku."
-# Stejně jako u Higgse: vždy idempotentní snapshot_download, který doplní
-# i částečné stažení. Offline s úplnou cache jen upozorní.
+# Same as for Higgs: always an idempotent snapshot_download, which also
+# completes a partial download. Offline with a complete cache it only warns.
 if "$PY" - "$WHISPER_MODEL" <<'PYDL'
 import sys
 from huggingface_hub import snapshot_download
@@ -249,16 +251,16 @@ else
   warn "whisper se nestáhl"
 fi
 
-# --- 7. 8bit konvert -------------------------------------------------------
+# --- 7. 8bit convert -------------------------------------------------------
 
-# Proč se kvantizuje lokálně a nestahuje hotové: licence Higgse je
-# Research/Non-Commercial, takže odvozené váhy nikam nepřerozdělujeme.
-# Konvert je navíc levný — pár minut proti 8,7 GB stahování.
+# Why it is quantised locally rather than downloaded ready-made: the Higgs
+# license is Research/Non-Commercial, so we do not redistribute derived weights.
+# The convert is also cheap — a few minutes against an 8.7 GB download.
 #
-# Je to VOLITELNÉ. Když krok selže nebo ho přeskočíš, server běží dál, jen
-# v /v1/models nenabídne "higgs-v3-8bit" a Binder u volby Rychlejší (8bit)
-# poctivě řekne, že ho server nemá. Nikdy nenabízíme jméno, které by při
-# syntéze spadlo.
+# It is OPTIONAL. If the step fails or you skip it, the server keeps running,
+# it just does not offer "higgs-v3-8bit" in /v1/models, and Binder, on the
+# Faster (8bit) option, honestly says that the server does not have it. We
+# never offer a name that would fail during synthesis.
 
 bold "\n7/7  8bit konvert (volitelný, ~4,4 GB)"
 if [[ -f "$CONVERT/model.safetensors" ]]; then
@@ -275,7 +277,7 @@ else
   fi
 fi
 
-# --- hotovo ----------------------------------------------------------------
+# --- done ------------------------------------------------------------------
 
 bold "\nHotovo."
 if whisper_cached; then
