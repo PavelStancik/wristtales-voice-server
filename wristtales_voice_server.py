@@ -81,9 +81,17 @@ MAX_BATCH = max(1, int(os.getenv("VOICE_SERVER_MAX_BATCH", str(DEFAULT_MAX_BATCH
 # with `miniaudio.DecodeError` AFTER it had already answered 200 on the
 # streamed response, and the client only saw "cannot parse response". The
 # client therefore sends the clip itself as `ref_audio_base64` (standard
-# base64 of the complete WAV file). We decode it into a private temp file and
-# hand the model a path it CAN open. `ref_audio` (a path) keeps working for
-# older clients; when both are present, the inline bytes win.
+# base64 of the complete audio file: WAV, MP3, FLAC or OGG). We decode it into
+# a private temp file and hand the model a path it CAN open. `ref_audio` (a
+# path) keeps working for older clients; when both are present, the inline
+# bytes win.
+#
+# The temp file's EXTENSION matters: mlx_audio loads references through
+# `miniaudio.get_file_info`, which picks its parser by file extension (and
+# raises "unsupported file format" for anything it does not know), never by
+# content. A clip stored under the wrong extension therefore fails to decode
+# even though the bytes are fine, so we sniff the magic bytes and name the file
+# accordingly (see `sniff_reference_audio_extension`).
 
 # Decoded clips above this are refused (HTTP 413). A 30 s 24 kHz mono WAV is
 # ~1.4 MB; 32 MB leaves a lot of room while bounding memory and disk.
@@ -142,12 +150,40 @@ def cleanup_stale_ref_audio(
     return removed
 
 
-def materialize_reference_audio(b64: Any) -> str:
-    """Decode ``ref_audio_base64`` into a temp WAV and return its path.
+def sniff_reference_audio_extension(data: bytes) -> Optional[str]:
+    """Return the file extension (with dot) for the container ``data`` is in.
 
-    The file is named by the sha256 of the bytes, so an identical clip sent
+    Recognises exactly the formats the miniaudio stack behind mlx_audio can
+    decode, by magic bytes: WAV (``RIFF....WAVE``), MP3 (ID3 tag or a bare
+    MPEG audio frame), FLAC (``fLaC``) and OGG (``OggS``). Returns ``None`` for
+    everything else (M4A/AAC, AIFF, ...), which that stack cannot read.
+    """
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data[:3] == b"ID3":
+        return ".mp3"
+    if data[:4] == b"fLaC":
+        return ".flac"
+    if data[:4] == b"OggS":
+        return ".ogg"
+    if len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0:
+        # Frame sync (11 set bits). Also require a valid MPEG version (not the
+        # reserved 01) and layer (not the reserved 00): raw ADTS AAC streams
+        # have the same 0xFFF sync but layer bits 00, and are not decodable.
+        if (data[1] >> 3) & 0x3 != 0x1 and (data[1] >> 1) & 0x3 != 0x0:
+            return ".mp3"
+    return None
+
+
+def materialize_reference_audio(b64: Any) -> str:
+    """Decode ``ref_audio_base64`` into a temp audio file and return its path.
+
+    The file is named by the sha256 of the bytes plus an extension sniffed
+    from the content (``.wav``, ``.mp3``, ``.flac`` or ``.ogg``), because
+    miniaudio chooses its decoder by extension. So an identical clip sent
     again (every batch of a chapter carries the same narrator) is written
-    once and reused. Raises ``ReferenceAudioError`` (400 / 413) on bad input.
+    once and reused. Raises ``ReferenceAudioError`` (400 / 413) on bad input,
+    including a format miniaudio cannot decode (400, before any model work).
     """
     if not isinstance(b64, str):
         raise ReferenceAudioError(400, "ref_audio_base64 must be a base64 string")
@@ -174,9 +210,17 @@ def materialize_reference_audio(b64: Any) -> str:
             f"{MAX_REF_AUDIO_BYTES}",
         )
 
+    extension = sniff_reference_audio_extension(data)
+    if extension is None:
+        raise ReferenceAudioError(
+            400,
+            "ref_audio_base64 is not a supported audio format: the clip must "
+            "be WAV, MP3, FLAC or OGG (M4A/AAC and AIFF cannot be decoded)",
+        )
+
     directory = ref_audio_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    target = directory / f"{hashlib.sha256(data).hexdigest()}.wav"
+    target = directory / f"{hashlib.sha256(data).hexdigest()}{extension}"
     try:
         if target.stat().st_size == len(data):
             os.utime(target)  # keep a reused clip from looking stale at restart
@@ -306,7 +350,7 @@ class BatchSpeechRequest(BaseModel):
     # the batch route and looked like a model problem, not a schema one.
     ref_audio: Optional[str] = None
     # Inline alternative to `ref_audio` (0.6.0): standard base64 of the whole
-    # WAV file. When present it wins and `ref_audio` is ignored — the
+    # audio file (WAV, MP3, FLAC or OGG). When present it wins and `ref_audio` is ignored — the
     # sandboxed Binder cannot hand this process a path it may open.
     ref_audio_base64: Optional[str] = None
     ref_text: Optional[str] = None
